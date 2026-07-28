@@ -49,6 +49,7 @@ from app.ml.trainer import ModelTrainer, TrainingResult
 from app.pages.model_manager_page import ModelManagerPage
 from app.utils.image_utils import preprocess_for_inference, preprocess_for_training
 from app.utils.model_io import load_model_metadata, save_model
+from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
 
 if TYPE_CHECKING:
     from app.main_window import MainWindow
@@ -213,6 +214,8 @@ class TrainPage(QWidget):
         self._pending_model_name: Optional[str] = None
         self._pending_grade_labels: List[str] = []
         self._pending_num_classes = 0
+        self._shortcut_bindings: List[tuple] = []
+        self._tab_order_applied = False
 
         self._build_ui()
         self._sync_from_main_window()
@@ -242,6 +245,30 @@ class TrainPage(QWidget):
 
         scroll.setWidget(content)
         root.addWidget(scroll, 1)
+
+    def _apply_tab_order(self) -> None:
+        """Chain focus order top-to-bottom through the left panel, then the right."""
+        chain = [
+            self._table,
+            self._add_images_button,
+            self._grade_list,
+            self._add_grade_button,
+            self._remove_grade_button,
+            self._info_button,
+            self._model_name_edit,
+            self._epochs_spin,
+            self._batch_size_combo,
+            self._lr_combo,
+            self._optimizer_combo,
+            self._weight_decay_spin,
+            self._val_split_slider,
+            self._pretrained_checkbox,
+            self._start_button,
+            self._stop_button,
+        ]
+        for earlier, later in zip(chain, chain[1:]):
+            if earlier is not None and later is not None:
+                QWidget.setTabOrder(earlier, later)
 
     def _build_header(self) -> QVBoxLayout:
         header = QVBoxLayout()
@@ -331,8 +358,10 @@ class TrainPage(QWidget):
         self._add_images_button = QPushButton("Add More Images")
         self._add_images_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_images_button.setStyleSheet(self._secondary_button_style())
+        self._add_images_button.setToolTip(shortcut_tooltip("Add more training images", "M"))
         self._add_images_button.clicked.connect(self._on_add_more_images)
         layout.addWidget(self._add_images_button)
+        self._shortcut_bindings.append((self._add_images_button, "M"))
 
         return section
 
@@ -373,14 +402,18 @@ class TrainPage(QWidget):
         self._add_grade_button = QPushButton("+ Add Grade")
         self._add_grade_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_grade_button.setStyleSheet(self._secondary_button_style())
+        self._add_grade_button.setToolTip(shortcut_tooltip("Add a new grade label", "A"))
         self._add_grade_button.clicked.connect(self._add_grade)
         button_row.addWidget(self._add_grade_button)
+        self._shortcut_bindings.append((self._add_grade_button, "A"))
 
         self._remove_grade_button = QPushButton("\u2212 Remove Selected")
         self._remove_grade_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._remove_grade_button.setStyleSheet(self._secondary_button_style())
+        self._remove_grade_button.setToolTip(shortcut_tooltip("Remove the selected grade label", "R"))
         self._remove_grade_button.clicked.connect(self._remove_selected_grade)
         button_row.addWidget(self._remove_grade_button)
+        self._shortcut_bindings.append((self._remove_grade_button, "R"))
 
         layout.addLayout(button_row)
 
@@ -416,8 +449,10 @@ class TrainPage(QWidget):
             f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
             f"QPushButton:disabled {{ background-color: #4A4230; color: #8B8168; }}"
         )
+        self._start_button.setToolTip(shortcut_tooltip("Start training the model", "S"))
         self._start_button.clicked.connect(self._on_start_training)
         layout.addWidget(self._start_button)
+        self._shortcut_bindings.append((self._start_button, "S"))
 
         self._stop_button = QPushButton("Stop Training")
         self._stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -429,8 +464,10 @@ class TrainPage(QWidget):
             f"QPushButton:disabled {{ color: #6B5050; border: 1px solid #4A3838; }}"
         )
         self._stop_button.setEnabled(False)
+        self._stop_button.setToolTip(shortcut_tooltip("Stop the current training run", "O"))
         self._stop_button.clicked.connect(self._on_stop_training)
         layout.addWidget(self._stop_button)
+        self._shortcut_bindings.append((self._stop_button, "O"))
 
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
@@ -474,6 +511,7 @@ class TrainPage(QWidget):
         header_row.addWidget(info_button)
         header_row.addStretch(1)
         outer.addLayout(header_row)
+        self._info_button = info_button
 
         self._info_label = QLabel(HYPERPARAM_INFO_TEXT)
         self._info_label.setWordWrap(True)
@@ -572,6 +610,14 @@ class TrainPage(QWidget):
     def showEvent(self, event) -> None:  # noqa: D401 - Qt override
         super().showEvent(event)
         self._sync_from_main_window()
+        bind_page_shortcuts(self._shortcut_bindings)
+        if not self._tab_order_applied:
+            self._apply_tab_order()
+            self._tab_order_applied = True
+
+    def hideEvent(self, event) -> None:  # noqa: D401 - Qt override
+        super().hideEvent(event)
+        unbind_page_shortcuts(self._shortcut_bindings)
 
     def _sync_from_main_window(self) -> None:
         if self.main_window is None:
@@ -592,6 +638,7 @@ class TrainPage(QWidget):
     def _on_add_more_images(self) -> None:
         file_filter = "Images (*.jpg *.jpeg *.png *.tif)"
         paths, _ = QFileDialog.getOpenFileNames(self, "Select Images", "", file_filter)
+        failed_names: List[str] = []
         for path in paths:
             if not path.lower().endswith(SUPPORTED_EXTENSIONS):
                 continue
@@ -602,8 +649,16 @@ class TrainPage(QWidget):
                     opened.load()
                     image = opened.convert("RGB")
             except (OSError, ValueError):
+                failed_names.append(Path(path).name)
                 continue
             self._add_training_image(path, image)
+
+        if failed_names:
+            names = ", ".join(failed_names[:3])
+            if len(failed_names) > 3:
+                names += f", and {len(failed_names) - 3} more"
+            count_word = "image" if len(failed_names) == 1 else "images"
+            self._show_status_error(f"Could not load {len(failed_names)} {count_word}: {names}")
 
     def _add_training_image(self, path: str, image: Image.Image) -> None:
         if any(row.path == path for row in self._image_rows):
@@ -627,6 +682,7 @@ class TrainPage(QWidget):
 
         remove_button = QPushButton("Remove")
         remove_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_button.setToolTip(f"Remove {Path(path).name} from the training set")
         remove_button.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {DANGER_COLOR}; border: none;"
             f"font-size: 11px; padding: 2px; }}"

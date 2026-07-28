@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.components.image_editor import ImageEditor, pil_to_qpixmap
+from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
 
 if TYPE_CHECKING:
     from app.main_window import MainWindow
@@ -51,6 +52,7 @@ ACCENT_HOVER_COLOR = "#C98A20"
 TEXT_PRIMARY = "#E8E9EC"
 TEXT_SECONDARY = "#8B909A"
 BUTTON_COLOR = "#2A2E36"
+DANGER_COLOR = "#E5484D"
 
 THUMBNAIL_SIZE = 120
 RIGHT_PANEL_WIDTH = 300
@@ -116,16 +118,16 @@ class _DropZone(QFrame):
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         layout.addWidget(subtitle)
 
-        browse_button = QPushButton("Browse Files")
-        browse_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        browse_button.setFixedWidth(140)
-        browse_button.setStyleSheet(
+        self.browse_button = QPushButton("Browse Files")
+        self.browse_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.browse_button.setFixedWidth(140)
+        self.browse_button.setStyleSheet(
             f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 600;"
             f"border: none; border-radius: 6px; padding: 8px 16px; }}"
             f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
         )
-        browse_button.clicked.connect(self._browse_files)
-        layout.addWidget(browse_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.browse_button.clicked.connect(self._browse_files)
+        layout.addWidget(self.browse_button, 0, Qt.AlignmentFlag.AlignHCenter)
 
     def _apply_style(self, active: bool) -> None:
         border_color = ACCENT_HOVER_COLOR if active else ACCENT_COLOR
@@ -279,6 +281,8 @@ class ImageImportPage(QWidget):
         self._feedback_label: Optional[QLabel] = None
         self._send_training_button: Optional[QPushButton] = None
         self._send_grading_button: Optional[QPushButton] = None
+        self._shortcut_bindings: List[tuple] = []
+        self._tab_order_applied = False
 
         self._build_ui()
         self._refresh_action_bar()
@@ -300,6 +304,8 @@ class ImageImportPage(QWidget):
 
         self._drop_zone = _DropZone()
         self._drop_zone.files_selected.connect(self._add_images)
+        self._drop_zone.browse_button.setToolTip(shortcut_tooltip("Browse for image files", "B"))
+        self._shortcut_bindings.append((self._drop_zone.browse_button, "B"))
         left_column.addWidget(self._drop_zone)
 
         left_column.addWidget(self._build_thumbnail_strip())
@@ -310,6 +316,38 @@ class ImageImportPage(QWidget):
 
         root.addLayout(content_row, 1)
         root.addLayout(self._build_action_bar())
+
+    def _apply_tab_order(self) -> None:
+        """Chain focus order: drop zone, then editor controls, then send actions."""
+        chain = [
+            self._drop_zone.browse_button,
+            self._editor.crop_button,
+            self._editor.flip_h_button,
+            self._editor.flip_v_button,
+            self._editor.rotate_ccw_button,
+            self._editor.rotate_cw_button,
+            self._editor.reset_button,
+            self._editor.apply_button,
+            self._send_training_button,
+            self._send_grading_button,
+        ]
+        for earlier, later in zip(chain, chain[1:]):
+            if earlier is not None and later is not None:
+                QWidget.setTabOrder(earlier, later)
+
+    def showEvent(self, event) -> None:  # noqa: D401 - Qt override
+        super().showEvent(event)
+        bind_page_shortcuts(self._shortcut_bindings)
+        if not self._tab_order_applied:
+            # Deferred until the page is actually parented under the main
+            # window (setTabOrder requires both widgets to share a window,
+            # which isn't yet true during __init__/_build_ui).
+            self._apply_tab_order()
+            self._tab_order_applied = True
+
+    def hideEvent(self, event) -> None:  # noqa: D401 - Qt override
+        super().hideEvent(event)
+        unbind_page_shortcuts(self._shortcut_bindings)
 
     def _build_header(self) -> QVBoxLayout:
         header = QVBoxLayout()
@@ -329,6 +367,7 @@ class ImageImportPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFixedHeight(176)
+        scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
@@ -373,6 +412,19 @@ class ImageImportPage(QWidget):
         self._editor.setVisible(False)
         layout.addWidget(self._editor)
 
+        editor_shortcuts = (
+            (self._editor.crop_button, "C", "Crop the image"),
+            (self._editor.flip_h_button, "H", "Flip Horizontal"),
+            (self._editor.flip_v_button, "V", "Flip Vertical"),
+            (self._editor.rotate_cw_button, "W", "Rotate 90\u00b0 CW"),
+            (self._editor.rotate_ccw_button, "Q", "Rotate 90\u00b0 CCW"),
+            (self._editor.reset_button, "O", "Reset to the original image"),
+            (self._editor.apply_button, "P", "Apply Changes"),
+        )
+        for button, letter, description in editor_shortcuts:
+            button.setToolTip(shortcut_tooltip(description, letter))
+            self._shortcut_bindings.append((button, letter))
+
         layout.addStretch(1)
         return panel
 
@@ -388,8 +440,10 @@ class ImageImportPage(QWidget):
             f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
             f"QPushButton:disabled {{ background-color: #4A4230; color: #8B8168; }}"
         )
+        self._send_training_button.setToolTip(shortcut_tooltip("Send all loaded images to Train Model", "S"))
         self._send_training_button.clicked.connect(self._send_to_training)
         row.addWidget(self._send_training_button)
+        self._shortcut_bindings.append((self._send_training_button, "S"))
 
         self._send_grading_button = QPushButton("Send to Grading")
         self._send_grading_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -399,8 +453,10 @@ class ImageImportPage(QWidget):
             f"QPushButton:hover {{ background-color: rgba(232, 168, 56, 30); }}"
             f"QPushButton:disabled {{ color: #8B909A; border: 1px solid #3A3E46; }}"
         )
+        self._send_grading_button.setToolTip(shortcut_tooltip("Send all loaded images to Grade Images", "D"))
         self._send_grading_button.clicked.connect(self._send_to_grading)
         row.addWidget(self._send_grading_button)
+        self._shortcut_bindings.append((self._send_grading_button, "D"))
 
         self._feedback_label = QLabel("")
         self._feedback_label.setStyleSheet(f"color: {ACCENT_COLOR}; font-size: 12px; background: transparent;")
@@ -418,6 +474,7 @@ class ImageImportPage(QWidget):
 
     def _add_images(self, paths: List[str]) -> None:
         added = 0
+        failed_names: List[str] = []
         for path in paths:
             if not path.lower().endswith(SUPPORTED_EXTENSIONS):
                 continue
@@ -426,6 +483,7 @@ class ImageImportPage(QWidget):
                     opened.load()
                     image = opened.convert("RGB")
             except (OSError, ValueError):
+                failed_names.append(Path(path).name)
                 continue
 
             image_id = next(self._id_counter)
@@ -445,6 +503,9 @@ class ImageImportPage(QWidget):
                 self._select_image(self._images[0].id)
 
         self._refresh_action_bar()
+
+        if failed_names:
+            self._show_load_error(failed_names)
 
     def _remove_image(self, image_id: int) -> None:
         index = next((i for i, item in enumerate(self._images) if item.id == image_id), None)
@@ -535,4 +596,15 @@ class ImageImportPage(QWidget):
 
     def _show_feedback(self, message: str) -> None:
         if self._feedback_label is not None:
+            self._feedback_label.setStyleSheet(f"color: {ACCENT_COLOR}; font-size: 12px; background: transparent;")
             self._feedback_label.setText(message)
+
+    def _show_load_error(self, failed_names: List[str]) -> None:
+        if self._feedback_label is None:
+            return
+        names = ", ".join(failed_names[:3])
+        if len(failed_names) > 3:
+            names += f", and {len(failed_names) - 3} more"
+        count_word = "image" if len(failed_names) == 1 else "images"
+        self._feedback_label.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 12px; background: transparent;")
+        self._feedback_label.setText(f"Could not load {len(failed_names)} {count_word}: {names}")

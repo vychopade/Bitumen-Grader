@@ -1,9 +1,457 @@
-BitumenGrader - User Guide
-==========================
+════════════════════════════════════════════════════════
+  BITUMENGRADER — USER GUIDE  v1.0
+════════════════════════════════════════════════════════
 
-(Placeholder) This document will contain the full user guide for the
-BitumenGrader desktop application, including installation instructions,
-a walkthrough of the Image Import, Train, Predict, and Model Manager
-pages, and troubleshooting tips.
+SECTION 1 — WHAT THIS APPLICATION DOES
+--------------------------------------
 
-To be generated later.
+BitumenGrader is a desktop application that looks at photographs of bitumen
+(asphalt binder) samples and predicts which performance grade the sample
+most likely belongs to. Instead of relying only on a lab technician's eye,
+you can point the application at a photo and get an instant, repeatable
+opinion on which grade the sample resembles, along with a confidence score
+telling you how sure the application is.
+
+Under the hood, BitumenGrader uses something called a CNN (Convolutional
+Neural Network). Think of a CNN as a pattern-recognition system that has
+been shown thousands of example photographs, each one labelled with the
+correct answer, until it has learned to notice the small visual differences
+(colour, texture, sheen, cracking patterns) that tend to separate one grade
+from another. Once it has learned these patterns, you can show it a brand
+new photo it has never seen before and it will make its best guess, the
+same way an experienced technician recognizes a grade "by eye" after
+years of practice.
+
+The "bitumen grades" being classified are Performance Grades (PG grades),
+the standard system used to describe how a bitumen binder behaves across a
+range of temperatures (for example PG 52-28 or PG 64-22). BitumenGrader
+ships with five example grades already set up (PG 52-28, PG 58-28,
+PG 64-22, PG 70-22, PG 76-16), but you can rename or add your own grade
+labels to match whatever grading system your lab uses.
+
+
+SECTION 2 — GETTING STARTED: SYSTEM REQUIREMENTS
+-------------------------------------------------
+
+Before you can run BitumenGrader, make sure your computer has:
+
+  1. Python 3.9 or newer installed (Python is the programming language the
+     application is written in). You can check your installed version by
+     opening a terminal (Command Prompt on Windows, Terminal on Mac/Linux)
+     and typing:
+
+         python --version
+
+  2. An operating system of Windows 10/11, macOS 11 or newer, or a modern
+     Linux distribution (e.g. Ubuntu 20.04+). BitumenGrader does not
+     require an internet connection to run day-to-day, only to install its
+     dependencies the first time.
+
+  3. At least 4 GB of free disk space (PyTorch, the machine-learning
+     library BitumenGrader depends on, is fairly large) and, ideally,
+     4 GB or more of RAM.
+
+INSTALLING THE REQUIRED SOFTWARE
+
+  BitumenGrader depends on several third-party libraries (listed in the
+  file "requirements.txt"). To install them, open a terminal, navigate to
+  the BitumenGrader folder, and run:
+
+         pip install -r requirements.txt
+
+  This downloads and installs everything the application needs, including
+  PyTorch (the machine-learning engine), PyQt6 (the window/interface
+  toolkit), and Pillow (for opening and editing images). This step can
+  take several minutes the first time.
+
+LAUNCHING THE APPLICATION
+
+  Once installation finishes, start BitumenGrader by running:
+
+         python main.py
+
+  A window titled "BitumenGrader" should appear on your screen, centered,
+  with a dark sidebar on the left listing four sections: Import Images,
+  Train Model, Grade Images, and Model Library.
+
+
+SECTION 3 — STEP-BY-STEP: GRADING IMAGES WITH AN EXISTING MODEL
+-----------------------------------------------------------------
+
+Follow these steps if someone has already trained a model (or you trained
+one previously) and you simply want to grade some new sample photos.
+
+  1. Open the application (see Section 2 if you have not already).
+
+  2. In the left-hand sidebar, click "Model Library".
+
+  3. Find the model you want to use in the grid of model cards. Each card
+     shows the model's name, the date it was created, how many grades
+     it recognizes, and its best validation accuracy (a measure of how
+     well it performed on images it wasn't trained on).
+
+  4. Click the amber "Load Model" button on that card. The button changes
+     to show a checkmark, and the card gets a thin amber highlight down
+     its left edge, confirming that model is now active. You will also
+     see the model's name appear at the bottom of the sidebar and in the
+     application's title bar.
+
+  5. Click "Grade Images" in the sidebar.
+
+  6. Near the top, you should now see a bar confirming "Active Model:"
+     followed by the model's name and date. If it instead says "No model
+     selected," go back to step 3.
+
+  7. Click "Add Images" (or drag and drop image files directly onto the
+     image queue on the left) to load the photographs you want graded.
+     Supported file types are .jpg, .jpeg, .png, and .tif.
+
+  8. Click the amber "Grade All" button. BitumenGrader will process every
+     image in the queue and show a result badge next to each one.
+
+  9. Read your results:
+       - Click any single image in the queue to see a large preview, the
+         predicted grade (shown in large bold text), a confidence
+         percentage, and a horizontal bar chart comparing the model's
+         confidence across every possible grade.
+       - The "Grade" label is the application's single best guess for
+         that sample.
+       - The "Confidence" percentage tells you how sure the model is.
+         A high confidence (for example 90% or more) means the image
+         strongly resembled the training examples for that grade. A low
+         confidence (for example under 60%) means the model is unsure and
+         the sample may sit between grades, be poorly lit, or be a type
+         of image the model hasn't seen much of before (see Section 8).
+     After grading all images, a summary card also shows the total number
+     of images graded, the most common grade found, and the average
+     confidence across the whole batch.
+
+  10. To keep a permanent record, click "Export Results". Choose where to
+      save the file, and BitumenGrader will write a CSV (comma-separated
+      values) file — a simple spreadsheet-style file you can open in Excel
+      or any spreadsheet program — listing every image, its predicted
+      grade, and its confidence score.
+
+  11. If you want to start over with a new batch, click "Clear Results".
+
+
+SECTION 4 — STEP-BY-STEP: TRAINING A NEW MODEL
+-------------------------------------------------
+
+Follow these steps when you want to teach BitumenGrader to recognize your
+own set of bitumen grades from your own photographs.
+
+  1. Collect your labelled images first. For every grade you want the
+     model to learn, gather photographs of samples that are known to be
+     that grade (confirmed by lab testing, not guesswork). Recommended
+     quantities:
+       - Minimum: at least 50 images per grade.
+       - Recommended: 200 or more images per grade, for noticeably better
+         and more reliable accuracy.
+     Try to vary lighting, angle, and sample size slightly across your
+     photos — a model trained on very uniform photos may struggle with
+     real-world variety later.
+
+  2. In the sidebar, click "Import Images".
+
+  3. Load your images either by dragging and dropping them onto the
+     dashed drop zone, or by clicking "Browse Files" and selecting them
+     (you can select many files at once).
+
+  4. Your images appear as thumbnails in a scrollable strip. Click any
+     thumbnail to open it in the editor on the right if you want to crop,
+     flip, or rotate it first (see Section 6).
+
+  5. Once you are happy with your images, click "Send to Training" at the
+     bottom of the page. This moves the images over to the Train Model
+     page.
+
+  6. Click "Train Model" in the sidebar. Your imported images now appear
+     in a table on the left.
+
+  7. Assign a grade to every image: click the dropdown in each image's row
+     and choose the correct grade label. If the grade you need is not
+     listed, use the "+ Add Grade" button below the grade-label list to
+     create it (you can rename any label by double-clicking it, or remove
+     one with "− Remove Selected").
+
+  8. On the right-hand side, fill in the training settings:
+       - Give your model a memorable name in the "Model Name" field.
+       - Adjust the hyperparameters if needed (see Section 5 for a full
+         explanation of each one — the defaults are a safe starting
+         point if you are unsure).
+
+  9. Click the amber "Start Training" button.
+
+  10. Wait for training to complete. While it runs, a progress panel shows
+      which "epoch" (full pass through your images) it is on, along with
+      live Train Loss, Validation Loss, and Validation Accuracy numbers,
+      a scrolling log, and a live-updating chart of the loss curves. You
+      can click "Stop Training" at any time to cleanly halt the process
+      early if needed.
+
+  11. When training finishes, a completion banner appears and the model is
+      saved automatically — you do not need to manually save anything.
+      The new model also becomes your active model right away, so you can
+      go straight to "Grade Images" to try it out, or click "View in
+      Model Library" from the completion banner to see it listed
+      alongside your other saved models.
+
+
+SECTION 5 — HYPERPARAMETER REFERENCE
+----------------------------------------
+
+"Hyperparameters" are the settings you choose before training starts that
+control how the model learns. You do not need to change any of them to get
+a working model — the defaults are sensible starting points — but
+understanding them helps you fine-tune results.
+
+  EPOCHS
+    What it does: One epoch is one complete pass through every training
+      image. More epochs means the model studies your images more times.
+    Increase it when: training accuracy is still improving and hasn't
+      leveled off yet, or your dataset is small.
+    Decrease it when: validation accuracy stops improving or starts
+      getting worse while training accuracy keeps climbing (a sign of
+      "overfitting" — the model is memorizing your exact photos instead
+      of learning general patterns).
+    Recommended starting value: 25.
+
+  BATCH SIZE
+    What it does: The number of images the model looks at together before
+      updating what it has learned. Smaller batches update more often but
+      more noisily; larger batches are steadier but need more memory.
+    Increase it when: you have a large dataset and plenty of memory, and
+      want smoother, more stable training.
+    Decrease it when: training is slow, your computer runs out of memory,
+      or your dataset is small.
+    Recommended starting value: 16.
+
+  LEARNING RATE
+    What it does: Controls how big a step the model takes each time it
+      adjusts itself based on what it just got right or wrong. Think of it
+      as the model's "stride length" while learning.
+    Increase it when: training is progressing very slowly and loss (the
+      model's error measurement) is barely decreasing.
+    Decrease it when: the loss curve looks jumpy or unstable, or the model
+      seems to be getting worse instead of better.
+    Recommended starting value: 0.001.
+
+  OPTIMIZER
+    What it does: The mathematical strategy the model uses to decide how
+      to adjust itself after each mistake. "Adam" automatically adapts its
+      own step sizes as it goes, making it forgiving and easy to use.
+      "SGD" (Stochastic Gradient Descent) is a simpler, more traditional
+      method that can sometimes reach a slightly better end result but
+      usually needs more careful tuning of the learning rate.
+    Increase/decrease: this is a choice rather than a number — start with
+      Adam, and only try SGD later if you want to experiment.
+    Recommended starting value: Adam.
+
+  WEIGHT DECAY
+    What it does: A small penalty that discourages the model from relying
+      too heavily on any single detail, which helps it generalize better
+      to new images instead of memorizing the training set (this
+      technique is called "regularization").
+    Increase it when: the model performs much better on training images
+      than on validation images (overfitting).
+    Decrease it when: the model seems to be learning too slowly or
+      underperforming on both training and validation images.
+    Recommended starting value: 0.0001.
+
+  VALIDATION SPLIT
+    What it does: The percentage of your images that are set aside and
+      never shown to the model during training, so they can be used
+      afterward to fairly check how well it actually learned.
+    Increase it when: you have a lot of images and want a more trustworthy
+      accuracy estimate.
+    Decrease it when: you have relatively few images and want to give the
+      model as much training data as possible.
+    Recommended starting value: 20%.
+
+  USE PRETRAINED BACKBONE
+    What it does: When checked, the model starts from a version that has
+      already learned general visual features (edges, textures, shapes)
+      from millions of unrelated photographs, then adapts that existing
+      knowledge to bitumen grading. When unchecked, it starts from a blank
+      slate and must learn everything from scratch.
+    Increase (turn on) when: you have a smaller dataset or want faster,
+      more reliable results — this is almost always the better choice.
+    Decrease (turn off) when: you have a very large dataset and want to
+      experiment with training entirely from scratch.
+    Recommended starting value: On (checked).
+
+
+SECTION 6 — EDITING IMAGES (CROP, FLIP, ROTATE)
+----------------------------------------------------
+
+Why edit images before training or grading? Cameras don't always frame a
+sample perfectly. Cropping out background clutter, straightening a
+sideways photo, or mirroring an image so all your samples "face" the same
+direction helps the model focus on the bitumen sample itself rather than
+irrelevant surroundings — which generally improves accuracy.
+
+All edits are non-destructive until you confirm them, meaning you can
+experiment freely and back out at any time before saving your changes.
+
+  HOW TO CROP AN IMAGE
+    1. Select the image's thumbnail so it appears in the editor panel.
+    2. Click the "Crop" button.
+    3. In the dialog that opens, drag the corners or edges of the
+       rectangle to select the area you want to keep.
+    4. Click "Confirm" to accept the crop, or "Cancel" to back out.
+
+  HOW TO FLIP AN IMAGE
+    1. Select the image's thumbnail.
+    2. Click the "Flip Horizontal" icon button to mirror the image
+       left-to-right, or "Flip Vertical" to mirror it top-to-bottom.
+
+  HOW TO ROTATE AN IMAGE
+    1. Select the image's thumbnail.
+    2. Click "Rotate 90° CW" (clockwise) or "Rotate 90° CCW"
+       (counter-clockwise) to turn the image a quarter-turn in that
+       direction. Click the same button again to keep rotating further.
+
+  UNDOING YOUR CHANGES
+    - Click "Reset to Original" at any time before applying to discard
+      all edits and start over from the untouched photo.
+    - Once you are happy with your edits, look for the small yellow dot
+      that appears whenever you have unsaved edits, then click
+      "Apply Changes" to lock them in. Until you click Apply, your edits
+      exist only in the preview and will not be used for training or
+      grading.
+
+
+SECTION 7 — MANAGING YOUR MODELS
+-------------------------------------
+
+HOW MODELS ARE NAMED AND STORED
+
+  Every time you finish training a model, BitumenGrader saves two files
+  into the application's "models" folder: one file holding the model's
+  learned weights, and a matching file holding its metadata (creation
+  date, the grade labels it recognizes, its accuracy, and its training
+  history). Both files share the name you typed into the "Model Name"
+  field when you started training, so choose a clear, descriptive name
+  (for example "RefineryA_June2026") to make models easy to tell apart
+  later.
+
+HOW TO LOAD A PREVIOUS MODEL
+
+  1. Click "Model Library" in the sidebar.
+  2. Use the search bar at the top to filter by name if you have many
+     models.
+  3. Click "Load Model" on the card for the model you want. It becomes
+     your active model immediately, ready to use on the Grade Images page.
+
+HOW TO DELETE A MODEL
+
+  1. On the model's card in the Model Library, click the red trash-can
+     icon.
+  2. Confirm the deletion in the dialog that appears. This permanently
+     removes both of that model's saved files, so make sure you no longer
+     need it (there is no undo).
+
+WHY KEEP MULTIPLE MODELS?
+
+  Keeping several models side by side is useful when you work with
+  different sources of bitumen, different camera setups, or want to
+  compare an older model's accuracy against a newly retrained one before
+  fully switching over. You can freely switch which model is "active"
+  at any time without losing any of the others.
+
+
+SECTION 8 — UNDERSTANDING YOUR RESULTS
+-------------------------------------------
+
+GRADE LABELS
+
+  The grade label is simply the model's single best prediction for a
+  photo — the grade it believes the sample most closely resembles, based
+  on everything it learned from your training images.
+
+CONFIDENCE SCORES
+
+  The confidence score is a percentage showing how strongly the model
+  favors its chosen grade over all the other possible grades. A
+  confidence of 95% means the model was very sure; a confidence close to
+  the "average" spread across all grades (for example, near 20% if there
+  are five grades) means the model was essentially guessing.
+
+WHAT TO DO IF CONFIDENCE IS LOW
+
+  If you are consistently seeing low-confidence results, try the
+  following, roughly in order:
+
+  1. Check image quality first. Blurry, poorly lit, or oddly-cropped
+     photos are the most common cause of low confidence. Retake or
+     re-crop the photo (see Section 6) and try grading it again.
+
+  2. Confirm you are using the right model. If your samples come from a
+     different source than the one used to train the active model, load
+     a more appropriate model from the Model Library, if one exists.
+
+  3. Add more training images. If low confidence happens across many
+     images of a particular grade, that grade likely needs more example
+     photos. Aim for the recommended minimum of 50, ideally 200+, per
+     grade (see Section 4).
+
+  4. Retrain the model. After adding more or better images, go back to
+     the Train Model page and train a new model. Give it a new name so
+     you can compare its accuracy against your previous version before
+     deciding which one to keep using.
+
+
+SECTION 9 — TROUBLESHOOTING
+--------------------------------
+
+  PROBLEM: The application won't start.
+    Likely cause: Python is not installed, is an unsupported version, or
+      the required libraries were never installed.
+    Fix: Confirm Python 3.9+ is installed ("python --version"), then run
+      "pip install -r requirements.txt" again from inside the
+      BitumenGrader folder before trying "python main.py" once more. If
+      an error dialog appears when launching, read its message — it is
+      designed to explain what went wrong rather than crash silently.
+
+  PROBLEM: A model won't load.
+    Likely cause: The model's file was moved, renamed, deleted outside
+      the application, or its saved file has become corrupted.
+    Fix: BitumenGrader will show an error dialog and automatically clear
+      the "active model" so you don't keep hitting the same failure. Open
+      the Model Library and confirm the model still appears in the list;
+      if not, retrain a replacement using the same or better images.
+
+  PROBLEM: Training crashes or stops unexpectedly.
+    Likely cause: An unusable image slipped into the training set, your
+      computer ran out of memory, or a setting (like batch size) is too
+      large for your hardware.
+    Fix: Check the scrolling log in the progress panel for the specific
+      error message. Try lowering the Batch Size, remove any images that
+      failed to load (BitumenGrader will flag these with a red banner),
+      and start training again. Training can also be stopped safely at
+      any time with the "Stop Training" button if you need to change
+      settings.
+
+  PROBLEM: The model's accuracy is low, or predictions seem unreliable.
+    Likely cause: Not enough training images, images that are too
+      similar to each other (little variety), grades that were
+      mislabeled, or too few training epochs.
+    Fix: Double-check your grade labels were assigned correctly before
+      training, add more and more varied images per grade (50 minimum,
+      200+ recommended), and try increasing Epochs slightly. See Section 5
+      for guidance on adjusting other hyperparameters.
+
+  PROBLEM: Images won't import.
+    Likely cause: The file format isn't supported, or the file is
+      corrupted/unreadable.
+    Fix: Confirm your files are .jpg, .jpeg, .png, or .tif. If a
+      particular file still fails, BitumenGrader will show an inline red
+      message telling you it was skipped rather than stopping the whole
+      import — try opening that file in another image viewer to confirm
+      it isn't damaged, or re-export/re-save it in a supported format.
+
+
+════════════════════════════════════════════════════════
+  End of User Guide — BitumenGrader v1.0
+════════════════════════════════════════════════════════

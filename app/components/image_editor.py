@@ -45,6 +45,7 @@ ACCENT_HOVER_COLOR = "#C98A20"
 TEXT_PRIMARY = "#E8E9EC"
 TEXT_SECONDARY = "#8B909A"
 WARNING_COLOR = "#F5C518"
+DANGER_COLOR = "#E5484D"
 BUTTON_COLOR = "#2A2E36"
 BUTTON_HOVER_COLOR = "#33373F"
 
@@ -415,42 +416,42 @@ class ImageEditor(QWidget):
 
         layout.addLayout(self._build_status_row())
 
-        crop_button = QPushButton("  Crop")
-        crop_button.setIcon(_build_icon("crop", TEXT_PRIMARY))
-        crop_button.setIconSize(QSize(16, 16))
-        crop_button.clicked.connect(self._open_crop_dialog)
-        layout.addWidget(crop_button)
-        self._action_buttons.append(crop_button)
+        self.crop_button = QPushButton("  Crop")
+        self.crop_button.setIcon(_build_icon("crop", TEXT_PRIMARY))
+        self.crop_button.setIconSize(QSize(16, 16))
+        self.crop_button.clicked.connect(self._open_crop_dialog)
+        layout.addWidget(self.crop_button)
+        self._action_buttons.append(self.crop_button)
 
         flip_row = QHBoxLayout()
         flip_row.setSpacing(8)
-        flip_h_button = self._build_icon_button("flip_h", "Flip Horizontal", self._flip_horizontal)
-        flip_v_button = self._build_icon_button("flip_v", "Flip Vertical", self._flip_vertical)
-        flip_row.addWidget(flip_h_button)
-        flip_row.addWidget(flip_v_button)
+        self.flip_h_button = self._build_icon_button("flip_h", "Flip Horizontal", self._flip_horizontal)
+        self.flip_v_button = self._build_icon_button("flip_v", "Flip Vertical", self._flip_vertical)
+        flip_row.addWidget(self.flip_h_button)
+        flip_row.addWidget(self.flip_v_button)
         layout.addLayout(flip_row)
-        self._action_buttons.extend((flip_h_button, flip_v_button))
+        self._action_buttons.extend((self.flip_h_button, self.flip_v_button))
 
         rotate_row = QHBoxLayout()
         rotate_row.setSpacing(8)
-        rotate_ccw_button = self._build_icon_button("rotate_ccw", "Rotate 90\u00b0 CCW", self._rotate_ccw)
-        rotate_cw_button = self._build_icon_button("rotate_cw", "Rotate 90\u00b0 CW", self._rotate_cw)
-        rotate_row.addWidget(rotate_ccw_button)
-        rotate_row.addWidget(rotate_cw_button)
+        self.rotate_ccw_button = self._build_icon_button("rotate_ccw", "Rotate 90\u00b0 CCW", self._rotate_ccw)
+        self.rotate_cw_button = self._build_icon_button("rotate_cw", "Rotate 90\u00b0 CW", self._rotate_cw)
+        rotate_row.addWidget(self.rotate_ccw_button)
+        rotate_row.addWidget(self.rotate_cw_button)
         layout.addLayout(rotate_row)
-        self._action_buttons.extend((rotate_ccw_button, rotate_cw_button))
+        self._action_buttons.extend((self.rotate_ccw_button, self.rotate_cw_button))
 
-        reset_button = QPushButton("Reset to Original")
-        reset_button.setObjectName("resetLink")
-        reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        reset_button.setStyleSheet(
+        self.reset_button = QPushButton("Reset to Original")
+        self.reset_button.setObjectName("resetLink")
+        self.reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reset_button.setStyleSheet(
             f"QPushButton#resetLink {{ background: transparent; color: {ACCENT_COLOR}; border: none;"
             f"text-decoration: underline; padding: 2px 0px; text-align: left; }}"
             f"QPushButton#resetLink:hover {{ color: {ACCENT_HOVER_COLOR}; }}"
         )
-        reset_button.clicked.connect(self._reset_to_original)
-        layout.addWidget(reset_button)
-        self._action_buttons.append(reset_button)
+        self.reset_button.clicked.connect(self._reset_to_original)
+        layout.addWidget(self.reset_button)
+        self._action_buttons.append(self.reset_button)
 
         layout.addStretch(1)
 
@@ -463,6 +464,7 @@ class ImageEditor(QWidget):
         )
         self._apply_button.clicked.connect(self._apply_changes)
         layout.addWidget(self._apply_button)
+        self.apply_button = self._apply_button
 
     def _build_status_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -533,20 +535,36 @@ class ImageEditor(QWidget):
     def _apply_transform(self, transform: Callable[[Image.Image], Image.Image]) -> None:
         if self._working_image is None:
             return
-        self._working_image = transform(self._working_image)
+        try:
+            transformed = transform(self._working_image)
+        except Exception as exc:  # noqa: BLE001 - never let a transform crash the app
+            self._show_transform_error(str(exc))
+            return
+        self._working_image = transformed
         self._set_dirty(True)
         self._update_preview()
 
     def _open_crop_dialog(self) -> None:
         if self._working_image is None:
             return
-        dialog = _CropDialog(self._working_image, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        try:
+            dialog = _CropDialog(self._working_image, self)
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        except Exception as exc:  # noqa: BLE001 - never let the crop dialog crash the app
+            self._show_transform_error(str(exc))
+            return
+        if accepted:
             cropped = dialog.cropped_image()
             if cropped is not None:
                 self._working_image = cropped
                 self._set_dirty(True)
                 self._update_preview()
+
+    def _show_transform_error(self, message: str) -> None:
+        if self._status_dot is not None and self._status_text is not None:
+            self._status_dot.setStyleSheet(f"background-color: {DANGER_COLOR}; border-radius: 4px;")
+            self._status_text.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 11px; background: transparent;")
+            self._status_text.setText(f"Edit failed: {message}")
 
     def _reset_to_original(self) -> None:
         if self._original_image is None:

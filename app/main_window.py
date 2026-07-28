@@ -21,6 +21,7 @@ from PyQt6.QtGui import (
     QFontMetrics,
     QGuiApplication,
     QIcon,
+    QKeySequence,
     QPainter,
     QPen,
     QPixmap,
@@ -60,6 +61,7 @@ NAV_HOVER_COLOR = "#1D2027"
 SIDEBAR_WIDTH = 220
 WINDOW_MIN_WIDTH = 1100
 WINDOW_MIN_HEIGHT = 720
+WINDOW_TITLE_BASE = "BitumenGrader"
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 _LOGO_PATH = _ASSETS_DIR / "logo.png"
@@ -73,6 +75,11 @@ _NAV_ITEMS = [
     ("grade", "Grade Images", "grade", PredictPage),
     ("library", "Model Library", "library", ModelManagerPage),
 ]
+
+#: Alt+<letter> keyboard shortcuts for sidebar nav items. These are always
+#: bound (the sidebar is always visible), so pages must avoid reusing these
+#: letters for their own Alt+key shortcuts.
+NAV_SHORTCUT_LETTERS = {"import": "I", "train": "T", "grade": "G", "library": "L"}
 
 
 def _resolve_font_family() -> str:
@@ -178,8 +185,8 @@ class _Sidebar(QWidget):
         layout.addLayout(self._build_brand_block())
         layout.addSpacing(28)
 
-        for index, (_key, label, icon_kind, _page_cls) in enumerate(_NAV_ITEMS):
-            button = self._build_nav_button(label, icon_kind, index)
+        for index, (key, label, icon_kind, _page_cls) in enumerate(_NAV_ITEMS):
+            button = self._build_nav_button(label, icon_kind, index, key)
             layout.addWidget(button)
             self._nav_buttons.append(button)
 
@@ -227,7 +234,7 @@ class _Sidebar(QWidget):
 
         return wrapper
 
-    def _build_nav_button(self, label: str, icon_kind: str, index: int) -> QPushButton:
+    def _build_nav_button(self, label: str, icon_kind: str, index: int, key: str) -> QPushButton:
         button = QPushButton(f"  {label}")
         button.setObjectName("navItem")
         button.setCheckable(True)
@@ -237,6 +244,11 @@ class _Sidebar(QWidget):
         button.setFixedHeight(44)
         button.setFont(QFont(self._font_family, 13))
         button.clicked.connect(lambda _checked, i=index: self._on_nav_clicked(i))
+
+        shortcut_letter = NAV_SHORTCUT_LETTERS.get(key)
+        if shortcut_letter:
+            button.setShortcut(QKeySequence(f"Alt+{shortcut_letter}"))
+            button.setToolTip(f"{label} (Alt+{shortcut_letter})")
 
         self._button_group.addButton(button, index)
         return button
@@ -301,7 +313,6 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
-        self.setWindowTitle("BitumenGrader")
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         if _LOGO_PATH.exists():
             self.setWindowIcon(QIcon(str(_LOGO_PATH)))
@@ -318,13 +329,13 @@ class MainWindow(QMainWindow):
         self._sidebar.nav_selected.connect(self._on_nav_selected)
 
         self._build_layout()
-        self._apply_stylesheet()
+        self._update_window_title()
 
         self._sidebar.set_active_index(0)
         self._stack.setCurrentIndex(0)
 
         self.resize(1280, 800)
-        self._center_on_screen()
+        self.center_on_screen()
 
     def _apply_base_font(self) -> None:
         body_font = QFont(self._font_family, 13)
@@ -377,9 +388,20 @@ class MainWindow(QMainWindow):
             display_name = (metadata or {}).get("name") or Path(model_path).stem
             self._sidebar.set_active_model_label(display_name)
 
+        self._update_window_title()
         self.active_model_changed.emit(self.active_model)
 
-    def _center_on_screen(self) -> None:
+    def _update_window_title(self) -> None:
+        """Refresh the window title to reflect the current active model (if any)."""
+        if self.active_model:
+            metadata = self.active_model.get("metadata") or {}
+            name = metadata.get("name") or Path(self.active_model.get("path", "")).stem
+            self.setWindowTitle(f"{WINDOW_TITLE_BASE} \u2014 {name}")
+        else:
+            self.setWindowTitle(f"{WINDOW_TITLE_BASE} \u2014 No Model Loaded")
+
+    def center_on_screen(self) -> None:
+        """Move this window to the center of its current (or primary) screen."""
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             return
@@ -387,83 +409,3 @@ class MainWindow(QMainWindow):
         frame_geometry = self.frameGeometry()
         frame_geometry.moveCenter(available_geometry.center())
         self.move(frame_geometry.topLeft())
-
-    def _apply_stylesheet(self) -> None:
-        self.setStyleSheet(
-            f"""
-            QMainWindow, QWidget#centralWidget {{
-                background-color: {BACKGROUND_COLOR};
-            }}
-
-            QWidget#sidebar {{
-                background-color: {SIDEBAR_COLOR};
-            }}
-
-            QFrame#sidebarSeparator {{
-                background-color: {SEPARATOR_COLOR};
-                border: none;
-            }}
-
-            QStackedWidget#contentStack {{
-                background-color: {BACKGROUND_COLOR};
-            }}
-
-            QLabel {{
-                color: {TEXT_PRIMARY};
-                background-color: transparent;
-            }}
-
-            QPushButton#navItem {{
-                text-align: left;
-                padding-left: 20px;
-                border: none;
-                border-left: 3px solid transparent;
-                border-radius: 0px;
-                background-color: transparent;
-                color: {TEXT_SECONDARY};
-            }}
-            QPushButton#navItem:hover {{
-                background-color: {NAV_HOVER_COLOR};
-                color: {TEXT_PRIMARY};
-            }}
-            QPushButton#navItem:checked {{
-                background-color: {SURFACE_COLOR};
-                border-left: 3px solid {ACCENT_COLOR};
-                color: {TEXT_PRIMARY};
-                font-weight: 600;
-            }}
-
-            QFrame#statusPill {{
-                background-color: {SURFACE_COLOR};
-                border-radius: 10px;
-            }}
-
-            QPushButton {{
-                border-radius: 6px;
-                border: none;
-                background-color: {SURFACE_COLOR};
-                color: {TEXT_PRIMARY};
-                padding: 8px 16px;
-            }}
-            QPushButton:hover {{
-                background-color: #2A2E36;
-            }}
-            QPushButton[accent="true"] {{
-                background-color: {ACCENT_COLOR};
-                color: {SIDEBAR_COLOR};
-                font-weight: 600;
-            }}
-            QPushButton[accent="true"]:hover {{
-                background-color: {ACCENT_HOVER_COLOR};
-            }}
-            QPushButton[accent="true"]:disabled {{
-                background-color: #4A4230;
-                color: #8B8168;
-            }}
-
-            QFrame[card="true"] {{
-                background-color: {SURFACE_COLOR};
-                border-radius: 8px;
-            }}
-            """
-        )
