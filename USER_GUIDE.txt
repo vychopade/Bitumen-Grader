@@ -1,0 +1,9 @@
+BitumenGrader - User Guide
+==========================
+
+(Placeholder) This document will contain the full user guide for the
+BitumenGrader desktop application, including installation instructions,
+a walkthrough of the Image Import, Train, Predict, and Model Manager
+pages, and troubleshooting tips.
+
+To be generated later.

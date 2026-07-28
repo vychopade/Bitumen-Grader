@@ -1,0 +1,5 @@
+Placeholder directory for saved models.
+
+Trained models are saved here as .pt files, each paired with a metadata
+JSON file (e.g. my_model.pt / my_model.json) describing architecture,
+training configuration, class labels, and performance metrics.
