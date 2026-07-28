@@ -15,12 +15,13 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 from PIL import Image
-from PyQt6.QtCore import QObject, QPointF, QRectF, QSize, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, QPointF, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -67,13 +69,16 @@ TEXT_PRIMARY = "#E8E9EC"
 TEXT_SECONDARY = "#8B909A"
 DANGER_COLOR = "#E5484D"
 DANGER_HOVER_BG = "rgba(229, 72, 77, 40)"
+SUCCESS_COLOR = "#3CB878"
 
 LEFT_PANEL_WIDTH = 400
 MIN_GRADES = 2
 MAX_GRADES = 10
 MIN_TRAINING_IMAGES = 4
 PLACEHOLDER_GRADE = "\u2014 Select Grade \u2014"
+BULK_ASSIGN_PLACEHOLDER = "Assign grade to selected\u2026"
 SUPPORTED_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif")
+BULK_STATUS_TIMEOUT_MS = 4000
 
 BATCH_SIZE_OPTIONS = (8, 16, 32, 64)
 LEARNING_RATE_OPTIONS = (0.0001, 0.001, 0.01)
@@ -167,6 +172,67 @@ class _TrainingImageRow:
     remove_button: QPushButton
 
 
+class _FolderImportDialog(QDialog):
+    """Small modal asking whether to bulk-label every image found in an imported folder."""
+
+    def __init__(self, grade_labels: List[str], folder_name: str, image_count: int, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Import Folder")
+        self.setModal(True)
+        self.setFixedWidth(360)
+        self.setStyleSheet(f"QDialog {{ background-color: {SURFACE_COLOR}; }}")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 18)
+        layout.setSpacing(14)
+
+        count_word = "image" if image_count == 1 else "images"
+        message = QLabel(
+            f'Found {image_count} {count_word} in \u201c{folder_name}\u201d.\n\n'
+            f"Assign a grade to all images in this folder?"
+        )
+        message.setWordWrap(True)
+        message.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; background: transparent;")
+        layout.addWidget(message)
+
+        self.grade_combo = QComboBox()
+        self.grade_combo.addItems(grade_labels)
+        self.grade_combo.setStyleSheet(
+            f"QComboBox {{ background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};"
+            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 6px 8px; }}"
+        )
+        layout.addWidget(self.grade_combo)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+
+        skip_button = QPushButton("Skip")
+        skip_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        skip_button.setStyleSheet(
+            f"QPushButton {{ background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};"
+            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 8px 14px; }}"
+            f"QPushButton:hover {{ background-color: #2A2E36; }}"
+        )
+        skip_button.clicked.connect(self.reject)
+        button_row.addWidget(skip_button)
+
+        confirm_button = QPushButton("Confirm")
+        confirm_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        confirm_button.setStyleSheet(
+            f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 700;"
+            f"border: none; border-radius: 6px; padding: 8px 14px; }}"
+            f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
+        )
+        confirm_button.clicked.connect(self.accept)
+        confirm_button.setDefault(True)
+        button_row.addWidget(confirm_button)
+
+        layout.addLayout(button_row)
+
+    def selected_grade(self) -> str:
+        return self.grade_combo.currentText()
+
+
 class TrainPage(QWidget):
     """Page for configuring and running CNN training jobs.
 
@@ -189,6 +255,15 @@ class TrainPage(QWidget):
         self._table: Optional[QTableWidget] = None
         self._image_status_label: Optional[QLabel] = None
         self._add_images_button: Optional[QPushButton] = None
+        self._import_folder_button: Optional[QPushButton] = None
+        self._select_all_button: Optional[QPushButton] = None
+        self._select_none_button: Optional[QPushButton] = None
+        self._bulk_grade_combo: Optional[QComboBox] = None
+        self._apply_bulk_button: Optional[QPushButton] = None
+        self._bulk_status_label: Optional[QLabel] = None
+        self._bulk_status_timer = QTimer(self)
+        self._bulk_status_timer.setSingleShot(True)
+        self._bulk_status_timer.timeout.connect(self._clear_bulk_status)
         self._grade_list: Optional[QListWidget] = None
         self._add_grade_button: Optional[QPushButton] = None
         self._remove_grade_button: Optional[QPushButton] = None
@@ -203,6 +278,7 @@ class TrainPage(QWidget):
         self._val_split_slider: Optional[QSlider] = None
         self._val_split_label: Optional[QLabel] = None
         self._pretrained_checkbox: Optional[QCheckBox] = None
+        self._label_completion_label: Optional[QLabel] = None
         self._start_button: Optional[QPushButton] = None
         self._stop_button: Optional[QPushButton] = None
         self._status_label: Optional[QLabel] = None
@@ -249,8 +325,13 @@ class TrainPage(QWidget):
     def _apply_tab_order(self) -> None:
         """Chain focus order top-to-bottom through the left panel, then the right."""
         chain = [
+            self._select_all_button,
+            self._select_none_button,
+            self._bulk_grade_combo,
+            self._apply_bulk_button,
             self._table,
             self._add_images_button,
+            self._import_folder_button,
             self._grade_list,
             self._add_grade_button,
             self._remove_grade_button,
@@ -320,13 +401,18 @@ class TrainPage(QWidget):
     def _build_training_images_section(self) -> QFrame:
         section, layout = self._make_section_frame("Training Images")
 
+        layout.addLayout(self._build_bulk_assign_toolbar())
+
         self._table = QTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(["Filename", "Grade", ""])
         self._table.verticalHeader().setVisible(False)
-        self._table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setShowGrid(False)
         self._table.setFixedHeight(220)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._show_table_context_menu)
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
@@ -340,6 +426,7 @@ class TrainPage(QWidget):
                 border: 1px solid {BORDER_COLOR}; border-radius: 6px; gridline-color: {BORDER_COLOR};
             }}
             QTableWidget::item {{ padding: 4px; }}
+            QTableWidget::item:selected {{ background-color: rgba(232, 168, 56, 45); color: {TEXT_PRIMARY}; }}
             QHeaderView::section {{
                 background-color: {SURFACE_COLOR}; color: {TEXT_SECONDARY}; border: none;
                 padding: 6px; font-size: 11px; font-weight: 600;
@@ -355,15 +442,98 @@ class TrainPage(QWidget):
         )
         layout.addWidget(self._image_status_label)
 
+        self._bulk_status_label = QLabel("")
+        self._bulk_status_label.setWordWrap(True)
+        self._bulk_status_label.setStyleSheet(
+            f"color: {SUCCESS_COLOR}; font-size: 11px; font-weight: 600; background: transparent;"
+        )
+        self._bulk_status_label.setVisible(False)
+        layout.addWidget(self._bulk_status_label)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+
         self._add_images_button = QPushButton("Add More Images")
         self._add_images_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_images_button.setStyleSheet(self._secondary_button_style())
         self._add_images_button.setToolTip(shortcut_tooltip("Add more training images", "M"))
         self._add_images_button.clicked.connect(self._on_add_more_images)
-        layout.addWidget(self._add_images_button)
+        button_row.addWidget(self._add_images_button)
         self._shortcut_bindings.append((self._add_images_button, "M"))
 
+        self._import_folder_button = QPushButton("Import Folder")
+        self._import_folder_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._import_folder_button.setStyleSheet(self._secondary_button_style())
+        self._import_folder_button.setToolTip(shortcut_tooltip("Import every image in a folder", "F"))
+        self._import_folder_button.clicked.connect(self._on_import_folder)
+        button_row.addWidget(self._import_folder_button)
+        self._shortcut_bindings.append((self._import_folder_button, "F"))
+
+        layout.addLayout(button_row)
+
         return section
+
+    def _build_bulk_assign_toolbar(self) -> QVBoxLayout:
+        toolbar = QVBoxLayout()
+        toolbar.setSpacing(6)
+
+        selection_row = QHBoxLayout()
+        selection_row.setSpacing(6)
+
+        compact_button_style = (
+            f"QPushButton {{ background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};"
+            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 5px 10px; font-size: 11px; }}"
+            f"QPushButton:hover {{ background-color: #2A2E36; }}"
+            f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid #2A2D34; }}"
+        )
+
+        self._select_all_button = QPushButton("Select All")
+        self._select_all_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._select_all_button.setStyleSheet(compact_button_style)
+        self._select_all_button.setToolTip(shortcut_tooltip("Select every image in the table", "L"))
+        self._select_all_button.clicked.connect(self._on_select_all)
+        selection_row.addWidget(self._select_all_button)
+        self._shortcut_bindings.append((self._select_all_button, "L"))
+
+        self._select_none_button = QPushButton("Select None")
+        self._select_none_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._select_none_button.setStyleSheet(compact_button_style)
+        self._select_none_button.setToolTip(shortcut_tooltip("Clear the table selection", "N"))
+        self._select_none_button.clicked.connect(self._on_select_none)
+        selection_row.addWidget(self._select_none_button)
+        self._shortcut_bindings.append((self._select_none_button, "N"))
+        selection_row.addStretch(1)
+
+        toolbar.addLayout(selection_row)
+
+        assign_row = QHBoxLayout()
+        assign_row.setSpacing(6)
+
+        self._bulk_grade_combo = QComboBox()
+        self._bulk_grade_combo.addItem(BULK_ASSIGN_PLACEHOLDER)
+        self._bulk_grade_combo.addItems(self._grade_labels)
+        self._bulk_grade_combo.setStyleSheet(
+            f"QComboBox {{ background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};"
+            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 4px 8px; font-size: 11px; }}"
+        )
+        assign_row.addWidget(self._bulk_grade_combo, 1)
+
+        self._apply_bulk_button = QPushButton("Apply to Selected")
+        self._apply_bulk_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._apply_bulk_button.setStyleSheet(
+            f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 700;"
+            f"border: none; border-radius: 6px; padding: 5px 10px; font-size: 11px; }}"
+            f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
+            f"QPushButton:disabled {{ background-color: #4A4230; color: #8B8168; }}"
+        )
+        self._apply_bulk_button.setToolTip(shortcut_tooltip("Assign the chosen grade to every selected image", "P"))
+        self._apply_bulk_button.clicked.connect(self._on_apply_to_selected)
+        assign_row.addWidget(self._apply_bulk_button)
+        self._shortcut_bindings.append((self._apply_bulk_button, "P"))
+
+        toolbar.addLayout(assign_row)
+
+        return toolbar
 
     def _build_grade_labels_section(self) -> QFrame:
         section, layout = self._make_section_frame("Grade Labels")
@@ -439,6 +609,12 @@ class TrainPage(QWidget):
         layout.setSpacing(16)
 
         layout.addWidget(self._build_hyperparams_section())
+
+        self._label_completion_label = QLabel("0 of 0 images labelled")
+        self._label_completion_label.setStyleSheet(
+            f"color: {ACCENT_COLOR}; font-size: 12px; font-weight: 600; background: transparent;"
+        )
+        layout.addWidget(self._label_completion_label)
 
         self._start_button = QPushButton("Start Training")
         self._start_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -638,6 +814,46 @@ class TrainPage(QWidget):
     def _on_add_more_images(self) -> None:
         file_filter = "Images (*.jpg *.jpeg *.png *.tif)"
         paths, _ = QFileDialog.getOpenFileNames(self, "Select Images", "", file_filter)
+        added, failed_names = self._load_and_add_images(paths)
+
+        if failed_names:
+            self._report_failed_loads(failed_names)
+        elif added:
+            self._show_bulk_status(f"Added {added} image(s).")
+
+    def _on_import_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Import Folder")
+        if not folder:
+            return
+
+        folder_path = Path(folder)
+        found_paths = sorted(
+            str(entry) for entry in folder_path.iterdir()
+            if entry.is_file() and entry.suffix.lower() in SUPPORTED_EXTENSIONS
+        )
+        if not found_paths:
+            self._show_status_error(f'No supported images (.jpg, .jpeg, .png, .tif) found in "{folder_path.name}".')
+            return
+
+        dialog = _FolderImportDialog(self._grade_labels, folder_path.name, len(found_paths), self)
+        confirmed = dialog.exec() == QDialog.DialogCode.Accepted
+        chosen_grade = dialog.selected_grade() if confirmed else None
+
+        added, failed_names = self._load_and_add_images(found_paths, assign_grade=chosen_grade)
+
+        if failed_names:
+            self._report_failed_loads(failed_names)
+        elif added:
+            if confirmed:
+                self._show_bulk_status(f'Imported {added} image(s) from "{folder_path.name}" and labelled "{chosen_grade}".')
+            else:
+                self._show_bulk_status(f'Imported {added} image(s) from "{folder_path.name}".')
+
+    def _load_and_add_images(
+        self, paths: List[str], assign_grade: Optional[str] = None
+    ) -> Tuple[int, List[str]]:
+        """Load and append each path as a training image, skipping duplicates/unsupported/corrupt files."""
+        added = 0
         failed_names: List[str] = []
         for path in paths:
             if not path.lower().endswith(SUPPORTED_EXTENSIONS):
@@ -652,13 +868,17 @@ class TrainPage(QWidget):
                 failed_names.append(Path(path).name)
                 continue
             self._add_training_image(path, image)
+            if assign_grade:
+                self._image_rows[-1].combo.setCurrentText(assign_grade)
+            added += 1
+        return added, failed_names
 
-        if failed_names:
-            names = ", ".join(failed_names[:3])
-            if len(failed_names) > 3:
-                names += f", and {len(failed_names) - 3} more"
-            count_word = "image" if len(failed_names) == 1 else "images"
-            self._show_status_error(f"Could not load {len(failed_names)} {count_word}: {names}")
+    def _report_failed_loads(self, failed_names: List[str]) -> None:
+        names = ", ".join(failed_names[:3])
+        if len(failed_names) > 3:
+            names += f", and {len(failed_names) - 3} more"
+        count_word = "image" if len(failed_names) == 1 else "images"
+        self._show_status_error(f"Could not load {len(failed_names)} {count_word}: {names}")
 
     def _add_training_image(self, path: str, image: Image.Image) -> None:
         if any(row.path == path for row in self._image_rows):
@@ -691,11 +911,12 @@ class TrainPage(QWidget):
         self._table.setCellWidget(row_index, 2, remove_button)
 
         row = _TrainingImageRow(path=path, image=image, combo=combo, remove_button=remove_button)
-        combo.currentIndexChanged.connect(lambda _index: self._update_image_status_label())
+        combo.currentIndexChanged.connect(lambda _index: self._on_row_grade_changed())
         remove_button.clicked.connect(lambda _checked, r=row: self._remove_training_image(r))
 
         self._image_rows.append(row)
         self._update_image_status_label()
+        self._update_label_completion()
 
     def _remove_training_image(self, row: _TrainingImageRow) -> None:
         if row not in self._image_rows:
@@ -704,14 +925,46 @@ class TrainPage(QWidget):
         self._table.removeRow(index)
         self._image_rows.pop(index)
         self._update_image_status_label()
+        self._update_label_completion()
+
+    def _on_row_grade_changed(self) -> None:
+        self._update_image_status_label()
+        self._update_label_completion()
+
+    def _label_counts(self) -> Tuple[int, int]:
+        total = len(self._image_rows)
+        labelled = sum(1 for row in self._image_rows if row.combo.currentText() != PLACEHOLDER_GRADE)
+        return total, labelled
 
     def _update_image_status_label(self) -> None:
-        count = len(self._image_rows)
-        if count == 0:
+        total, labelled = self._label_counts()
+        if total == 0:
             self._image_status_label.setText("No images loaded yet.")
             return
-        assigned = sum(1 for row in self._image_rows if row.combo.currentText() != PLACEHOLDER_GRADE)
-        self._image_status_label.setText(f"{count} image(s) loaded \u2014 {assigned} assigned a grade.")
+        self._image_status_label.setText(f"{total} image(s) loaded \u2014 {labelled} assigned a grade.")
+
+    def _update_label_completion(self) -> None:
+        if self._label_completion_label is None:
+            return
+        total, labelled = self._label_counts()
+        self._label_completion_label.setText(f"{labelled} of {total} images labelled")
+
+        all_labelled = total > 0 and labelled == total
+        color = SUCCESS_COLOR if all_labelled else ACCENT_COLOR
+        self._label_completion_label.setStyleSheet(
+            f"color: {color}; font-size: 12px; font-weight: 600; background: transparent;"
+        )
+
+        if self._start_button is None:
+            return
+        if self._thread is not None:
+            # A training run is in progress; _set_training_ui_active manages the button then.
+            return
+        self._start_button.setEnabled(all_labelled)
+        if all_labelled:
+            self._start_button.setToolTip(shortcut_tooltip("Start training the model", "S"))
+        else:
+            self._start_button.setToolTip("Label all images before training")
 
     # -- Grade label management ----------------------------------------------
 
@@ -727,7 +980,17 @@ class TrainPage(QWidget):
     def _refresh_grade_dropdowns(self) -> None:
         for row in self._image_rows:
             self._populate_grade_combo(row.combo, current_text=row.combo.currentText())
+        if self._bulk_grade_combo is not None:
+            current = self._bulk_grade_combo.currentText()
+            self._bulk_grade_combo.blockSignals(True)
+            self._bulk_grade_combo.clear()
+            self._bulk_grade_combo.addItem(BULK_ASSIGN_PLACEHOLDER)
+            self._bulk_grade_combo.addItems(self._grade_labels)
+            index = self._bulk_grade_combo.findText(current)
+            self._bulk_grade_combo.setCurrentIndex(index if index >= 0 else 0)
+            self._bulk_grade_combo.blockSignals(False)
         self._update_image_status_label()
+        self._update_label_completion()
 
     def _on_grade_item_changed(self, item: QListWidgetItem) -> None:
         row = self._grade_list.row(item)
@@ -785,6 +1048,108 @@ class TrainPage(QWidget):
         if self._remove_grade_button is not None:
             has_selection = self._grade_list.currentRow() >= 0
             self._remove_grade_button.setEnabled(has_selection and len(self._grade_labels) > MIN_GRADES)
+
+    # -- Bulk selection & label assignment ------------------------------------
+
+    def _get_selected_row_indices(self) -> List[int]:
+        selection_model = self._table.selectionModel()
+        if selection_model is None:
+            return []
+        return sorted({index.row() for index in selection_model.selectedRows()})
+
+    def _on_select_all(self) -> None:
+        self._table.selectAll()
+
+    def _on_select_none(self) -> None:
+        self._table.clearSelection()
+
+    def _on_apply_to_selected(self) -> None:
+        grade = self._bulk_grade_combo.currentText() if self._bulk_grade_combo is not None else ""
+        if not grade or grade == BULK_ASSIGN_PLACEHOLDER:
+            self._show_status_error("Choose a grade to assign before clicking \u201cApply to Selected.\u201d")
+            return
+
+        selected_indices = self._get_selected_row_indices()
+        if not selected_indices:
+            self._show_status_error("Select at least one image in the table first.")
+            return
+
+        rows = [self._image_rows[index] for index in selected_indices if index < len(self._image_rows)]
+        self._apply_grade_to_rows(rows, grade)
+        self._show_bulk_status(f"Grade assigned to {len(rows)} image(s).")
+
+    def _apply_grade_to_rows(self, rows: List[_TrainingImageRow], grade: str) -> None:
+        for row in rows:
+            row.combo.setCurrentText(grade)
+
+    def _show_bulk_status(self, message: str) -> None:
+        if self._bulk_status_label is None:
+            return
+        self._bulk_status_label.setText(message)
+        self._bulk_status_label.setVisible(True)
+        self._bulk_status_timer.start(BULK_STATUS_TIMEOUT_MS)
+
+    def _clear_bulk_status(self) -> None:
+        if self._bulk_status_label is None:
+            return
+        self._bulk_status_label.setVisible(False)
+
+    # -- Right-click context menu ---------------------------------------------
+
+    def _show_table_context_menu(self, pos: QPoint) -> None:
+        index = self._table.indexAt(pos)
+        if not index.isValid() or index.row() >= len(self._image_rows):
+            return
+        clicked_row_index = index.row()
+
+        selected_indices = self._get_selected_row_indices()
+        if clicked_row_index not in selected_indices:
+            self._table.selectRow(clicked_row_index)
+            selected_indices = [clicked_row_index]
+
+        clicked_row = self._image_rows[clicked_row_index]
+        selected_rows = [self._image_rows[i] for i in selected_indices if i < len(self._image_rows)]
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY}; border: 1px solid {BORDER_COLOR}; }}
+            QMenu::item {{ padding: 6px 20px; }}
+            QMenu::item:selected {{ background-color: {ACCENT_COLOR}; color: #13151A; }}
+            QMenu::separator {{ height: 1px; background-color: {BORDER_COLOR}; margin: 4px 0; }}
+            """
+        )
+
+        assign_this_menu = menu.addMenu("Assign grade to this image")
+        for label in self._grade_labels:
+            action = assign_this_menu.addAction(label)
+            action.triggered.connect(
+                lambda _checked=False, r=clicked_row, g=label: self._apply_grade_to_rows_with_status([r], g)
+            )
+
+        assign_selected_menu = menu.addMenu(f"Assign grade to all selected images ({len(selected_rows)})")
+        for label in self._grade_labels:
+            action = assign_selected_menu.addAction(label)
+            action.triggered.connect(
+                lambda _checked=False, rs=selected_rows, g=label: self._apply_grade_to_rows_with_status(rs, g)
+            )
+
+        menu.addSeparator()
+        remove_action = menu.addAction("Remove from training set")
+        remove_action.triggered.connect(lambda: self._remove_selected_or_clicked(selected_rows, clicked_row))
+
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _apply_grade_to_rows_with_status(self, rows: List[_TrainingImageRow], grade: str) -> None:
+        self._apply_grade_to_rows(rows, grade)
+        self._show_bulk_status(f"Grade assigned to {len(rows)} image(s).")
+
+    def _remove_selected_or_clicked(
+        self, selected_rows: List[_TrainingImageRow], clicked_row: _TrainingImageRow
+    ) -> None:
+        rows_to_remove = selected_rows if len(selected_rows) > 1 else [clicked_row]
+        for row in list(rows_to_remove):
+            self._remove_training_image(row)
 
     # -- Training lifecycle ---------------------------------------------------
 
@@ -970,8 +1335,15 @@ class TrainPage(QWidget):
         self._stop_button.setEnabled(False)
 
     def _set_training_ui_active(self, active: bool) -> None:
-        self._start_button.setEnabled(not active)
         self._stop_button.setEnabled(active)
+
+        if active:
+            self._start_button.setEnabled(False)
+            self._start_button.setToolTip("Training in progress\u2026")
+        else:
+            # Re-derive enabled/tooltip from label-completion state rather than
+            # unconditionally re-enabling, since not every image may be labelled.
+            self._update_label_completion()
 
         for widget in (
             self._model_name_edit,
@@ -986,6 +1358,11 @@ class TrainPage(QWidget):
             self._remove_grade_button,
             self._grade_list,
             self._add_images_button,
+            self._import_folder_button,
+            self._select_all_button,
+            self._select_none_button,
+            self._bulk_grade_combo,
+            self._apply_bulk_button,
         ):
             if widget is not None:
                 widget.setEnabled(not active)
