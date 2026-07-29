@@ -49,7 +49,6 @@ from app.pages.train_page import TrainPage
 # --------------------------------------------------------------------------
 
 BACKGROUND_COLOR = "#1A1C20"
-SIDEBAR_COLOR = "#13151A"
 SURFACE_COLOR = "#22252C"
 ACCENT_COLOR = "#E8A838"
 ACCENT_HOVER_COLOR = "#C98A20"
@@ -182,9 +181,6 @@ class _Sidebar(QWidget):
         layout.setContentsMargins(0, 24, 0, 16)
         layout.setSpacing(0)
 
-        layout.addLayout(self._build_brand_block())
-        layout.addSpacing(28)
-
         for index, (key, label, icon_kind, _page_cls) in enumerate(_NAV_ITEMS):
             button = self._build_nav_button(label, icon_kind, index, key)
             layout.addWidget(button)
@@ -192,47 +188,6 @@ class _Sidebar(QWidget):
 
         layout.addStretch(1)
         layout.addWidget(self._build_status_pill())
-
-    def _build_brand_block(self) -> QVBoxLayout:
-        wrapper = QVBoxLayout()
-        wrapper.setContentsMargins(20, 0, 20, 0)
-        wrapper.setSpacing(10)
-
-        logo_label = QLabel()
-        logo_label.setFixedSize(40, 40)
-        pixmap = QPixmap(str(_LOGO_PATH)) if _LOGO_PATH.exists() else QPixmap()
-        if not pixmap.isNull() and min(pixmap.width(), pixmap.height()) >= 8:
-            scaled = pixmap.scaled(
-                40,
-                40,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            logo_label.setPixmap(scaled)
-        else:
-            logo_label.setText("BG")
-            logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            logo_font = QFont(self._font_family, 14)
-            logo_font.setWeight(QFont.Weight.DemiBold)
-            logo_label.setFont(logo_font)
-            logo_label.setStyleSheet(
-                f"background-color: {ACCENT_COLOR}; color: {SIDEBAR_COLOR}; border-radius: 8px;"
-            )
-        wrapper.addWidget(logo_label)
-
-        name_label = QLabel("BitumenGrader")
-        name_font = QFont(self._font_family, 15)
-        name_font.setWeight(QFont.Weight.DemiBold)
-        name_label.setFont(name_font)
-        name_label.setStyleSheet(f"color: {TEXT_PRIMARY};")
-        wrapper.addWidget(name_label)
-
-        version_label = QLabel("v1.0")
-        version_label.setFont(QFont(self._font_family, 11))
-        version_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
-        wrapper.addWidget(version_label)
-
-        return wrapper
 
     def _build_nav_button(self, label: str, icon_kind: str, index: int, key: str) -> QPushButton:
         button = QPushButton(f"  {label}")
