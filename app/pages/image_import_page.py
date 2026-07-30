@@ -4,22 +4,31 @@ Image Import page.
 Provides the UI for uploading bitumen sample images into the application,
 organizing them, and launching the image editor for cropping, flipping,
 and rotating images before they are used for training or prediction.
+
+To stay responsive with very large imports, thumbnails are generated on a
+background QThread and revealed in paginated batches (see ``_ThumbnailWorker``
+and ``BATCH_SIZE``) rather than decoding every image up front on the GUI
+thread. Only the currently-selected image is ever fully decoded and held in
+memory; everything else is tracked by file path and (re-)opened on demand.
 """
 from __future__ import annotations
 
 import itertools
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from tempfile import gettempdir
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from PIL import Image
-from PyQt6.QtCore import QPointF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QPointF, QSize, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QDragEnterEvent,
     QDropEvent,
     QFontMetrics,
     QIcon,
+    QImage,
     QMouseEvent,
     QPainter,
     QPen,
@@ -36,7 +45,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.components.image_editor import ImageEditor, pil_to_qpixmap
+from app.components.image_editor import ImageEditor, pil_to_qimage
 from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
 
 if TYPE_CHECKING:
@@ -53,10 +62,27 @@ TEXT_PRIMARY = "#E8E9EC"
 TEXT_SECONDARY = "#8B909A"
 BUTTON_COLOR = "#2A2E36"
 DANGER_COLOR = "#E5484D"
+BORDER_COLOR = "#33373F"
 
 THUMBNAIL_SIZE = 120
 RIGHT_PANEL_WIDTH = 300
 SUPPORTED_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif")
+
+#: How many thumbnails are materialized (widget + background decode) at a
+#: time. The remainder wait behind the "Load More" button so importing
+#: thousands of files never blocks the UI or creates thousands of widgets
+#: up front.
+BATCH_SIZE = 100
+
+#: Above this many images (loaded + still pending), show a one-line notice
+#: that thumbnails are being paginated rather than all-at-once.
+LARGE_DATASET_THRESHOLD = 2000
+
+#: Where non-destructively edited images are written to disk so that
+#: everything downstream (thumbnails, training, grading) can keep treating
+#: "path on disk" as the single source of truth instead of holding decoded
+#: pixel buffers in memory. See ``ImageImportPage._persist_edited_image``.
+_EDIT_CACHE_DIR = Path(gettempdir()) / "bitumengrader_edited_images"
 
 
 def _build_close_icon(color: str, size: int = 12) -> QIcon:
@@ -81,12 +107,58 @@ def _build_close_icon(color: str, size: int = 12) -> QIcon:
 
 @dataclass
 class _LoadedImage:
-    """A single imported image and the thumbnail widget representing it."""
+    """A single imported image and the thumbnail widget representing it.
+
+    ``image`` is ``None`` unless this is the currently-selected item: the
+    full-resolution decoded copy is only materialized on selection (for the
+    editor) and evicted again as soon as another image is selected, so
+    memory use stays roughly constant regardless of how many images are
+    loaded overall.
+    """
 
     id: int
     path: str
-    image: Image.Image
+    image: Optional[Image.Image]
     thumbnail: "_Thumbnail"
+
+
+class _ThumbnailWorker(QObject):
+    """Opens and resizes a batch of images to thumbnail-sized QImages off the GUI thread.
+
+    ``QImage`` (unlike ``QPixmap``) has no dependency on the GUI thread or a
+    platform paint engine, so it is safe to construct here and hand back to
+    the main thread for the final ``QPixmap`` conversion.
+    """
+
+    thumbnail_ready = pyqtSignal(int, QImage)
+    thumbnail_failed = pyqtSignal(int, str)
+    finished = pyqtSignal()
+
+    def __init__(self, items: List[Tuple[int, str]]):
+        super().__init__()
+        self._items = items
+        self._stop_requested = False
+
+    def stop(self) -> None:
+        self._stop_requested = True
+
+    def run(self) -> None:
+        for image_id, path in self._items:
+            if self._stop_requested:
+                break
+            try:
+                with Image.open(path) as opened:
+                    opened.load()
+                    rgb = opened.convert("RGB")
+            except (OSError, ValueError):
+                self.thumbnail_failed.emit(image_id, Path(path).name)
+                continue
+
+            thumb = rgb.copy()
+            thumb.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE), Image.Resampling.LANCZOS)
+            self.thumbnail_ready.emit(image_id, pil_to_qimage(thumb))
+
+        self.finished.emit()
 
 
 class _DropZone(QFrame):
@@ -175,15 +247,21 @@ class _DropZone(QFrame):
 
 
 class _Thumbnail(QWidget):
-    """A single 120x120 image thumbnail with a filename label and a remove (\u00d7) button."""
+    """A single 120x120 image thumbnail with a filename label and a remove (\u00d7) button.
+
+    Constructed with just a filename; the actual pixel content arrives later
+    via ``set_thumbnail_from_qimage`` (from the background thumbnail worker)
+    or ``set_error`` if that image could not be decoded.
+    """
 
     clicked = pyqtSignal(int)
     remove_requested = pyqtSignal(int)
 
-    def __init__(self, image_id: int, pil_image: Image.Image, filename: str, parent: Optional[QWidget] = None):
+    def __init__(self, image_id: int, filename: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._image_id = image_id
         self._selected = False
+        self._errored = False
         self.setFixedWidth(THUMBNAIL_SIZE)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -191,7 +269,7 @@ class _Thumbnail(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
 
-        self._image_label = QLabel()
+        self._image_label = QLabel("\u2026")
         self._image_label.setFixedSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE)
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(self._image_label)
@@ -202,7 +280,6 @@ class _Thumbnail(QWidget):
         self._set_filename(filename)
         outer.addWidget(self._name_label)
 
-        self.set_thumbnail_image(pil_image)
         self._update_frame_style()
 
         self._remove_button = QPushButton(self._image_label)
@@ -225,23 +302,42 @@ class _Thumbnail(QWidget):
         self._name_label.setText(elided)
         self._name_label.setToolTip(filename)
 
-    def set_thumbnail_image(self, pil_image: Image.Image) -> None:
-        pixmap = pil_to_qpixmap(pil_image).scaled(
+    def set_thumbnail_from_qimage(self, qimage: QImage) -> None:
+        self._errored = False
+        self._image_label.setText("")
+        pixmap = QPixmap.fromImage(qimage).scaled(
             THUMBNAIL_SIZE,
             THUMBNAIL_SIZE,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
         self._image_label.setPixmap(pixmap)
+        self._update_frame_style()
+
+    def set_thumbnail_image(self, pil_image: Image.Image) -> None:
+        self.set_thumbnail_from_qimage(pil_to_qimage(pil_image))
+
+    def set_error(self) -> None:
+        self._errored = True
+        self._image_label.setPixmap(QPixmap())
+        self._image_label.setText("Couldn't\nload image")
+        self._update_frame_style()
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
         self._update_frame_style()
 
     def _update_frame_style(self) -> None:
-        border_color = ACCENT_COLOR if self._selected else "transparent"
+        if self._errored:
+            border_color = DANGER_COLOR
+        elif self._selected:
+            border_color = ACCENT_COLOR
+        else:
+            border_color = "transparent"
+        text_color = DANGER_COLOR if self._errored else TEXT_SECONDARY
         self._image_label.setStyleSheet(
             f"background-color: {SURFACE_COLOR}; border: 2px solid {border_color}; border-radius: 6px;"
+            f"color: {text_color}; font-size: 10px;"
         )
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -253,13 +349,17 @@ class _Thumbnail(QWidget):
 class ImageImportPage(QWidget):
     """Page for importing bitumen sample images and editing them before use.
 
-    Loaded images are tracked locally (as PIL images plus their thumbnail
-    widgets); the currently selected one is bound to the right-hand
-    ``ImageEditor`` panel. "Send to Training" / "Send to Grading" hand the
-    current image list off to the rest of the app: they store the payload on
+    Images are tracked by file path; only the selected image (for the
+    ``ImageEditor``) is ever fully decoded into memory. Thumbnails are
+    generated progressively in batches of ``BATCH_SIZE`` on a background
+    QThread, with a "Load More" control revealing further batches, so
+    importing very large datasets never freezes the UI.
+
+    "Send to Training" / "Send to Grading" hand the full set of imported
+    paths off to the rest of the app: they store the payload on
     ``main_window.training_images`` / ``main_window.grading_images`` (read by
-    those pages once implemented) and also emit local Qt signals for any
-    listener that wants to react directly.
+    those pages) and also emit local Qt signals for any listener that wants
+    to react directly.
     """
 
     images_sent_to_training = pyqtSignal(list)
@@ -270,11 +370,18 @@ class ImageImportPage(QWidget):
         self.main_window = main_window
 
         self._images: List[_LoadedImage] = []
+        self._pending_paths: List[str] = []
         self._selected_id: Optional[int] = None
         self._id_counter = itertools.count(1)
 
+        self._thumbnail_thread: Optional[QThread] = None
+        self._thumbnail_worker: Optional[_ThumbnailWorker] = None
+        self._batch_failed_names: List[str] = []
+
         self._thumbnail_row: Optional[QHBoxLayout] = None
         self._empty_strip_label: Optional[QLabel] = None
+        self._load_more_button: Optional[QPushButton] = None
+        self._dataset_warning_banner: Optional[QFrame] = None
         self._editor: Optional[ImageEditor] = None
         self._editor_placeholder: Optional[QLabel] = None
         self._count_label: Optional[QLabel] = None
@@ -295,6 +402,9 @@ class ImageImportPage(QWidget):
         root.setSpacing(18)
 
         root.addLayout(self._build_header())
+
+        self._dataset_warning_banner = self._build_dataset_warning_banner()
+        root.addWidget(self._dataset_warning_banner)
 
         content_row = QHBoxLayout()
         content_row.setSpacing(20)
@@ -363,6 +473,22 @@ class ImageImportPage(QWidget):
 
         return header
 
+    def _build_dataset_warning_banner(self) -> QFrame:
+        banner = QFrame()
+        banner.setStyleSheet(
+            f"QFrame {{ background-color: rgba(232, 168, 56, 30); border: 1px solid {ACCENT_COLOR};"
+            f"border-radius: 8px; }}"
+        )
+        layout = QHBoxLayout(banner)
+        layout.setContentsMargins(14, 10, 14, 10)
+
+        label = QLabel("Large dataset detected \u2014 thumbnails will load progressively.")
+        label.setStyleSheet(f"color: {ACCENT_COLOR}; font-size: 12px; font-weight: 600; background: transparent;")
+        layout.addWidget(label)
+
+        banner.setVisible(False)
+        return banner
+
     def _build_thumbnail_strip(self) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -381,6 +507,20 @@ class ImageImportPage(QWidget):
         self._empty_strip_label = QLabel("No images loaded yet \u2014 add some above.")
         self._empty_strip_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;")
         self._thumbnail_row.addWidget(self._empty_strip_label)
+
+        self._load_more_button = QPushButton("Load More")
+        self._load_more_button.setFixedSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE)
+        self._load_more_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._load_more_button.setStyleSheet(
+            f"QPushButton {{ background-color: {SURFACE_COLOR}; color: {ACCENT_COLOR}; font-weight: 600;"
+            f"font-size: 11px; border: 2px dashed {ACCENT_COLOR}; border-radius: 6px; }}"
+            f"QPushButton:hover {{ background-color: rgba(232, 168, 56, 30); }}"
+            f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 2px dashed {BORDER_COLOR}; }}"
+        )
+        self._load_more_button.clicked.connect(self._on_load_more_clicked)
+        self._load_more_button.setVisible(False)
+        self._thumbnail_row.addWidget(self._load_more_button)
+
         self._thumbnail_row.addStretch(1)
 
         scroll.setWidget(container)
@@ -451,7 +591,7 @@ class ImageImportPage(QWidget):
             f"QPushButton {{ background-color: transparent; color: {ACCENT_COLOR};"
             f"border: 1px solid {ACCENT_COLOR}; border-radius: 6px; padding: 9px 18px; }}"
             f"QPushButton:hover {{ background-color: rgba(232, 168, 56, 30); }}"
-            f"QPushButton:disabled {{ color: #8B909A; border: 1px solid #3A3E46; }}"
+            f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid #3A3E46; }}"
         )
         self._send_grading_button.setToolTip(shortcut_tooltip("Send all loaded images to Grade Images", "D"))
         self._send_grading_button.clicked.connect(self._send_to_grading)
@@ -459,6 +599,7 @@ class ImageImportPage(QWidget):
         self._shortcut_bindings.append((self._send_grading_button, "D"))
 
         self._feedback_label = QLabel("")
+        self._feedback_label.setWordWrap(True)
         self._feedback_label.setStyleSheet(f"color: {ACCENT_COLOR}; font-size: 12px; background: transparent;")
         row.addWidget(self._feedback_label)
 
@@ -470,42 +611,118 @@ class ImageImportPage(QWidget):
 
         return row
 
-    # -- Image list management ----------------------------------------------
+    # -- Image list management (paginated + threaded thumbnails) ------------
+
+    def _all_known_paths(self) -> List[str]:
+        """Every path added this session, whether or not its thumbnail has loaded yet."""
+        return [item.path for item in self._images] + list(self._pending_paths)
 
     def _add_images(self, paths: List[str]) -> None:
-        added = 0
-        failed_names: List[str] = []
+        already_known = {item.path for item in self._images} | set(self._pending_paths)
+        new_paths: List[str] = []
         for path in paths:
-            if not path.lower().endswith(SUPPORTED_EXTENSIONS):
+            if not path.lower().endswith(SUPPORTED_EXTENSIONS) or path in already_known:
                 continue
-            try:
-                with Image.open(path) as opened:
-                    opened.load()
-                    image = opened.convert("RGB")
-            except (OSError, ValueError):
-                failed_names.append(Path(path).name)
-                continue
+            new_paths.append(path)
+            already_known.add(path)
 
+        if not new_paths:
+            return
+
+        self._pending_paths.extend(new_paths)
+        self._load_next_batch()
+        self._refresh_action_bar()
+        self._update_dataset_warning()
+
+    def _on_load_more_clicked(self) -> None:
+        self._load_next_batch()
+
+    def _load_next_batch(self) -> None:
+        """Materialize up to ``BATCH_SIZE`` pending paths and thumbnail them in the background."""
+        if not self._pending_paths or self._thumbnail_thread is not None:
+            self._update_load_more_button()
+            return
+
+        batch = self._pending_paths[:BATCH_SIZE]
+        del self._pending_paths[:BATCH_SIZE]
+
+        items: List[Tuple[int, str]] = []
+        for path in batch:
             image_id = next(self._id_counter)
-            thumbnail = _Thumbnail(image_id, image, Path(path).name)
+            thumbnail = _Thumbnail(image_id, Path(path).name)
             thumbnail.clicked.connect(self._select_image)
             thumbnail.remove_requested.connect(self._remove_image)
 
-            insert_index = self._thumbnail_row.count() - 1
-            self._thumbnail_row.insertWidget(max(insert_index, 0), thumbnail)
-            self._images.append(_LoadedImage(id=image_id, path=path, image=image, thumbnail=thumbnail))
-            added += 1
+            # Widgets always stay in order [thumbnails..., load_more_button, stretch];
+            # insert new thumbnails just before those two trailing items.
+            insert_index = max(self._thumbnail_row.count() - 2, 0)
+            self._thumbnail_row.insertWidget(insert_index, thumbnail)
 
-        if added:
-            if self._empty_strip_label is not None:
-                self._empty_strip_label.setVisible(False)
-            if self._selected_id is None:
-                self._select_image(self._images[0].id)
+            self._images.append(_LoadedImage(id=image_id, path=path, image=None, thumbnail=thumbnail))
+            items.append((image_id, path))
 
+        if self._empty_strip_label is not None:
+            self._empty_strip_label.setVisible(False)
+        if self._selected_id is None and self._images:
+            self._select_image(self._images[0].id)
+
+        self._start_thumbnail_worker(items)
+        self._update_load_more_button()
         self._refresh_action_bar()
 
-        if failed_names:
-            self._show_load_error(failed_names)
+    def _start_thumbnail_worker(self, items: List[Tuple[int, str]]) -> None:
+        self._batch_failed_names = []
+        self._thumbnail_thread = QThread(self)
+        self._thumbnail_worker = _ThumbnailWorker(items)
+        self._thumbnail_worker.moveToThread(self._thumbnail_thread)
+
+        self._thumbnail_thread.started.connect(self._thumbnail_worker.run)
+        self._thumbnail_worker.thumbnail_ready.connect(self._on_thumbnail_ready)
+        self._thumbnail_worker.thumbnail_failed.connect(self._on_thumbnail_failed)
+        self._thumbnail_worker.finished.connect(self._thumbnail_thread.quit)
+        self._thumbnail_thread.finished.connect(self._on_thumbnail_thread_finished)
+
+        self._thumbnail_thread.start()
+
+    def _on_thumbnail_ready(self, image_id: int, qimage: QImage) -> None:
+        item = self._find_image(image_id)
+        if item is not None:
+            item.thumbnail.set_thumbnail_from_qimage(qimage)
+
+    def _on_thumbnail_failed(self, image_id: int, filename: str) -> None:
+        item = self._find_image(image_id)
+        if item is not None:
+            item.thumbnail.set_error()
+        self._batch_failed_names.append(filename)
+
+    def _on_thumbnail_thread_finished(self) -> None:
+        if self._thumbnail_thread is not None:
+            self._thumbnail_thread.deleteLater()
+        if self._thumbnail_worker is not None:
+            self._thumbnail_worker.deleteLater()
+        self._thumbnail_thread = None
+        self._thumbnail_worker = None
+
+        if self._batch_failed_names:
+            self._show_load_error(self._batch_failed_names)
+            self._batch_failed_names = []
+
+        self._update_load_more_button()
+
+    def _update_load_more_button(self) -> None:
+        if self._load_more_button is None:
+            return
+        remaining = len(self._pending_paths)
+        loading = self._thumbnail_thread is not None
+
+        self._load_more_button.setVisible(remaining > 0 or loading)
+        if loading:
+            self._load_more_button.setEnabled(False)
+            self._load_more_button.setText("Loading\u2026")
+        else:
+            self._load_more_button.setEnabled(True)
+            shown = min(BATCH_SIZE, remaining)
+            self._load_more_button.setText(f"Load {shown} More\n({remaining} left)")
 
     def _remove_image(self, image_id: int) -> None:
         index = next((i for i, item in enumerate(self._images) if item.id == image_id), None)
@@ -523,12 +740,14 @@ class ImageImportPage(QWidget):
             else:
                 self._clear_editor()
 
-        if not self._images and self._empty_strip_label is not None:
+        if not self._images and not self._pending_paths and self._empty_strip_label is not None:
             self._empty_strip_label.setVisible(True)
 
         self._refresh_action_bar()
+        self._update_dataset_warning()
 
     def _select_image(self, image_id: int) -> None:
+        previous_id = self._selected_id
         self._selected_id = image_id
         for item in self._images:
             item.thumbnail.set_selected(item.id == image_id)
@@ -537,9 +756,31 @@ class ImageImportPage(QWidget):
         if item is None or self._editor is None or self._editor_placeholder is None:
             return
 
+        if item.image is None:
+            try:
+                with Image.open(item.path) as opened:
+                    opened.load()
+                    item.image = opened.convert("RGB")
+            except (OSError, ValueError):
+                self._show_feedback(f"Could not open \u201c{Path(item.path).name}\u201d for editing.", danger=True)
+                # Restore the previous selection state rather than leaving the
+                # editor pointed at an image that failed to open.
+                self._selected_id = previous_id
+                for other in self._images:
+                    other.thumbnail.set_selected(other.id == previous_id)
+                return
+
         self._editor_placeholder.setVisible(False)
         self._editor.setVisible(True)
         self._editor.set_image(item.image)
+
+        # Only the freshly-selected image needs to stay decoded in memory;
+        # evict the previous selection's copy so RAM use doesn't grow with
+        # the number of images the user has merely clicked through.
+        if previous_id is not None and previous_id != image_id:
+            previous_item = self._find_image(previous_id)
+            if previous_item is not None:
+                previous_item.image = None
 
     def _clear_editor(self) -> None:
         if self._editor is None or self._editor_placeholder is None:
@@ -551,60 +792,103 @@ class ImageImportPage(QWidget):
     def _find_image(self, image_id: int) -> Optional[_LoadedImage]:
         return next((item for item in self._images if item.id == image_id), None)
 
+    def _persist_edited_image(self, item: _LoadedImage, pil_image: Image.Image) -> str:
+        """Write a non-destructively-edited image to a cache file and return its new path.
+
+        Everything downstream of this page (thumbnails, "Send to Training",
+        "Send to Grading") treats ``item.path`` as the authoritative location
+        of an image's current pixels, so edits must land on disk rather than
+        living only in a Python-side ``Image.Image`` -- otherwise they would
+        be silently lost once training/grading re-reads the *original* file
+        from its original path instead of holding decoded copies in RAM.
+        """
+        _EDIT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        stem = Path(item.path).stem
+        filename = f"{stem}_{item.id}_{uuid.uuid4().hex[:8]}.png"
+        new_path = _EDIT_CACHE_DIR / filename
+        pil_image.save(new_path, format="PNG")
+        return str(new_path)
+
     def _on_editor_image_updated(self, pil_image: Image.Image) -> None:
         if self._selected_id is None:
             return
         item = self._find_image(self._selected_id)
         if item is None:
             return
+
+        try:
+            new_path = self._persist_edited_image(item, pil_image)
+        except OSError as exc:
+            self._show_feedback(f"Edit could not be saved to disk: {exc}", danger=True)
+            return
+
+        item.path = new_path
         item.image = pil_image
         item.thumbnail.set_thumbnail_image(pil_image)
 
     # -- Action bar ----------------------------------------------------------
 
     def _refresh_action_bar(self) -> None:
-        count = len(self._images)
-        if self._count_label is not None:
-            self._count_label.setText(f"{count} image(s) loaded")
-        if self._send_training_button is not None:
-            self._send_training_button.setEnabled(count > 0)
-        if self._send_grading_button is not None:
-            self._send_grading_button.setEnabled(count > 0)
-        if self._feedback_label is not None:
-            self._feedback_label.setText("")
+        loaded = len(self._images)
+        pending = len(self._pending_paths)
+        total = loaded + pending
 
-    def _build_payload(self) -> List[Dict[str, Any]]:
-        return [{"path": item.path, "image": item.image.copy()} for item in self._images]
+        if self._count_label is not None:
+            if pending:
+                self._count_label.setText(f"{total} image(s) loaded ({pending} thumbnail(s) pending)")
+            else:
+                self._count_label.setText(f"{total} image(s) loaded")
+
+        if self._send_training_button is not None:
+            self._send_training_button.setEnabled(total > 0)
+        if self._send_grading_button is not None:
+            self._send_grading_button.setEnabled(total > 0)
+
+    def _update_dataset_warning(self) -> None:
+        if self._dataset_warning_banner is None:
+            return
+        total = len(self._images) + len(self._pending_paths)
+        self._dataset_warning_banner.setVisible(total > LARGE_DATASET_THRESHOLD)
+
+    def _build_path_payload(self) -> List[Dict[str, Any]]:
+        """Path-only payload for the rest of the app.
+
+        Training and grading both read images directly from disk (see
+        ``TrainPage``'s ``_ImageGradeDataset`` and ``PredictPage``'s image
+        loading), so handing off bare paths -- rather than a list of fully
+        decoded ``PIL.Image`` objects -- avoids duplicating potentially
+        thousands of decoded images in memory during the hand-off.
+        """
+        return [{"path": path} for path in self._all_known_paths()]
 
     def _send_to_training(self) -> None:
-        if not self._images:
+        if not self._images and not self._pending_paths:
             return
-        payload = self._build_payload()
+        payload = self._build_path_payload()
         if self.main_window is not None:
             self.main_window.training_images = payload
         self.images_sent_to_training.emit(payload)
         self._show_feedback(f"Sent {len(payload)} image(s) to Training.")
 
     def _send_to_grading(self) -> None:
-        if not self._images:
+        if not self._images and not self._pending_paths:
             return
-        payload = self._build_payload()
+        payload = self._build_path_payload()
         if self.main_window is not None:
             self.main_window.grading_images = payload
         self.images_sent_to_grading.emit(payload)
         self._show_feedback(f"Sent {len(payload)} image(s) to Grading.")
 
-    def _show_feedback(self, message: str) -> None:
-        if self._feedback_label is not None:
-            self._feedback_label.setStyleSheet(f"color: {ACCENT_COLOR}; font-size: 12px; background: transparent;")
-            self._feedback_label.setText(message)
-
-    def _show_load_error(self, failed_names: List[str]) -> None:
+    def _show_feedback(self, message: str, *, danger: bool = False) -> None:
         if self._feedback_label is None:
             return
+        color = DANGER_COLOR if danger else ACCENT_COLOR
+        self._feedback_label.setStyleSheet(f"color: {color}; font-size: 12px; background: transparent;")
+        self._feedback_label.setText(message)
+
+    def _show_load_error(self, failed_names: List[str]) -> None:
         names = ", ".join(failed_names[:3])
         if len(failed_names) > 3:
             names += f", and {len(failed_names) - 3} more"
         count_word = "image" if len(failed_names) == 1 else "images"
-        self._feedback_label.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 12px; background: transparent;")
-        self._feedback_label.setText(f"Could not load {len(failed_names)} {count_word}: {names}")
+        self._show_feedback(f"Could not load {len(failed_names)} {count_word}: {names}", danger=True)

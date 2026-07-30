@@ -796,6 +796,13 @@ class PredictPage(QWidget):
         unbind_page_shortcuts(self._shortcut_bindings)
 
     def _sync_from_main_window(self) -> None:
+        """Pull queued paths from ``main_window.grading_images`` and open each from disk.
+
+        ``ImageImportPage`` hands off bare file paths (not decoded images) so
+        that sending a large batch to grading never duplicates thousands of
+        already-imported images in memory; this page opens each one itself,
+        exactly as ``_add_images`` already does for manually-added files.
+        """
         if self.main_window is None:
             return
         incoming = getattr(self.main_window, "grading_images", None)
@@ -804,10 +811,17 @@ class PredictPage(QWidget):
 
         existing_paths = {q.path for q in self._queue}
         added_any = False
+        failed_names: List[str] = []
         for entry in incoming:
             path = entry.get("path")
-            image = entry.get("image")
-            if not path or image is None or path in existing_paths:
+            if not path or path in existing_paths or not path.lower().endswith(SUPPORTED_EXTENSIONS):
+                continue
+            try:
+                with Image.open(path) as opened:
+                    opened.load()
+                    image = opened.convert("RGB")
+            except (OSError, ValueError):
+                failed_names.append(Path(path).name)
                 continue
             self._add_queue_image(path, image)
             existing_paths.add(path)
@@ -816,6 +830,9 @@ class PredictPage(QWidget):
         if added_any:
             self._update_queue_status_label()
             self._update_action_buttons_enabled()
+
+        if failed_names:
+            self._show_image_load_error(failed_names)
 
     def _on_add_images(self) -> None:
         file_filter = "Images (*.jpg *.jpeg *.png *.tif)"

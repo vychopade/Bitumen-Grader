@@ -55,16 +55,25 @@ MIN_CROP_SIZE = 24
 HANDLE_SIZE = 10
 
 
-def pil_to_qpixmap(image: Image.Image) -> QPixmap:
-    """Convert a PIL image to a QPixmap via QImage.
+def pil_to_qimage(image: Image.Image) -> QImage:
+    """Convert a PIL image to a standalone QImage.
 
-    Copies the underlying QImage buffer so the returned QPixmap remains
-    valid after the source ``bytes`` object is garbage collected.
+    Copies the underlying buffer so the returned QImage remains valid after
+    the source ``bytes`` object is garbage collected. Unlike ``QPixmap``,
+    ``QImage`` has no dependency on the GUI thread/platform paint engine, so
+    this is safe to call from a background ``QThread`` (e.g. thumbnail
+    generation workers) -- only convert the result to a ``QPixmap`` back on
+    the main thread.
     """
     rgba = image.convert("RGBA")
     data = rgba.tobytes("raw", "RGBA")
     qimage = QImage(data, rgba.width, rgba.height, QImage.Format.Format_RGBA8888)
-    return QPixmap.fromImage(qimage.copy())
+    return qimage.copy()
+
+
+def pil_to_qpixmap(image: Image.Image) -> QPixmap:
+    """Convert a PIL image to a QPixmap via QImage."""
+    return QPixmap.fromImage(pil_to_qimage(image))
 
 
 def _build_icon(kind: str, color: str, size: int = 16) -> QIcon:

@@ -5,17 +5,39 @@ Provides the UI for configuring and launching CNN training runs: selecting
 the training dataset, assigning grade labels, setting hyperparameters, and
 running training on a background QThread while streaming live progress into
 an embedded ProgressPanel.
+
+The training-images table is backed by a ``QAbstractTableModel``
+(``TrainingImagesModel``) rather than populating a ``QTableWidget`` with a
+live ``QComboBox``/``QPushButton`` per row. Qt's item views only ever call
+into the model for rows that are actually visible in the viewport, so this
+table comfortably handles datasets of 10,000+ images without creating
+per-row widgets or freezing the UI. Images themselves are tracked purely by
+file path -- see ``_ImageGradeDataset`` for how training reads pixels
+straight from disk instead of holding decoded copies in memory.
 """
 from __future__ import annotations
 
+import platform
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 from PIL import Image
-from PyQt6.QtCore import QObject, QPoint, QPointF, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QObject,
+    QPoint,
+    QPointF,
+    QRectF,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -37,8 +59,8 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
+    QStyledItemDelegate,
+    QTableView,
     QVBoxLayout,
     QWidget,
 )
@@ -84,6 +106,12 @@ BATCH_SIZE_OPTIONS = (8, 16, 32, 64)
 LEARNING_RATE_OPTIONS = (0.0001, 0.001, 0.01)
 OPTIMIZER_OPTIONS = ("Adam", "SGD")
 
+# Training-images table columns.
+COL_FILENAME = 0
+COL_GRADE = 1
+COL_REMOVE = 2
+COL_COUNT = 3
+
 _MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "models"
 
 HYPERPARAM_INFO_TEXT = (
@@ -95,6 +123,18 @@ HYPERPARAM_INFO_TEXT = (
     "Validation Split: fraction of images held out to measure performance.\n"
     "Pretrained Backbone: start from ImageNet weights instead of random init."
 )
+
+
+def _default_num_workers() -> int:
+    """PyTorch DataLoader worker-process count for streaming images from disk.
+
+    4 background worker processes decode images in parallel while the GPU/CPU
+    trains on the previous batch. Windows' multiprocessing start method
+    (``spawn``, with no ``fork``) makes worker processes considerably more
+    expensive to start and more prone to subtle issues in bundled desktop
+    apps, so we fall back to loading on the main process there (0 workers).
+    """
+    return 0 if platform.system() == "Windows" else 4
 
 
 def _build_info_icon(color: str, size: int = 14) -> QIcon:
@@ -128,9 +168,16 @@ def _build_info_icon(color: str, size: int = 14) -> QIcon:
 
 
 class _ImageGradeDataset(Dataset):
-    """Wraps ``(PIL.Image, label_index)`` pairs, applying train/inference preprocessing."""
+    """Wraps ``(path, label_index)`` pairs, decoding each image from disk on demand.
 
-    def __init__(self, samples: List[Tuple[Image.Image, int]], train: bool):
+    Images are intentionally *not* pre-loaded into an in-memory list of
+    decoded ``PIL.Image`` objects: with ``DataLoader(num_workers > 0)``, each
+    sample is opened by a separate worker process only when it's actually
+    needed for the next batch, so datasets far larger than available RAM
+    (10,000+ images) can still be trained on without ballooning memory use.
+    """
+
+    def __init__(self, samples: List[Tuple[str, int]], train: bool):
         self._samples = samples
         self._train = train
 
@@ -138,7 +185,9 @@ class _ImageGradeDataset(Dataset):
         return len(self._samples)
 
     def __getitem__(self, index: int):
-        image, label = self._samples[index]
+        path, label = self._samples[index]
+        with Image.open(path) as opened:
+            image = opened.convert("RGB")
         tensor = preprocess_for_training(image) if self._train else preprocess_for_inference(image)
         return tensor, label
 
@@ -162,14 +211,189 @@ class _TrainingWorker(QObject):
         self.finished.emit(result)
 
 
-@dataclass(eq=False)
+@dataclass
 class _TrainingImageRow:
-    """A single training image plus the table-cell widgets representing it."""
+    """A single training image tracked purely by file path plus its assigned grade.
+
+    No decoded ``PIL.Image`` is kept here -- the table only ever needs the
+    filename and the current grade text, and training streams pixels from
+    ``path`` on demand (see ``_ImageGradeDataset``), so each row stays a
+    small, constant-size record no matter how large the dataset gets.
+    """
 
     path: str
-    image: Image.Image
-    combo: QComboBox
-    remove_button: QPushButton
+    grade: str = field(default=PLACEHOLDER_GRADE)
+
+
+class TrainingImagesModel(QAbstractTableModel):
+    """Backs the training-images ``QTableView``.
+
+    Using a real model instead of a ``QTableWidget`` populated with a
+    per-row ``QComboBox``/``QPushButton`` (via ``setCellWidget``) is what
+    actually makes 10,000+ rows practical: Qt's item views only call
+    ``data()``/paint for rows that intersect the current viewport, so there
+    is never a live widget instantiated for every row simultaneously.
+    """
+
+    grades_changed = pyqtSignal()
+
+    def __init__(self, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self.rows: List[_TrainingImageRow] = []
+        self.grade_labels: List[str] = []
+
+    # -- QAbstractTableModel overrides --------------------------------------
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802 - Qt override
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802 - Qt override
+        return 0 if parent.isValid() else COL_COUNT
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):  # noqa: N802 - Qt override
+        if orientation != Qt.Orientation.Horizontal or role != Qt.ItemDataRole.DisplayRole:
+            return None
+        return ("Filename", "Grade", "")[section]
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:  # noqa: N802 - Qt override
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if index.column() == COL_GRADE:
+            base |= Qt.ItemFlag.ItemIsEditable
+        return base
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):  # noqa: N802 - Qt override
+        if not index.isValid() or not (0 <= index.row() < len(self.rows)):
+            return None
+        row = self.rows[index.row()]
+        column = index.column()
+
+        if column == COL_FILENAME:
+            if role == Qt.ItemDataRole.DisplayRole:
+                return Path(row.path).name
+            if role == Qt.ItemDataRole.ToolTipRole:
+                return row.path
+        elif column == COL_GRADE:
+            if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+                return row.grade
+            if role == Qt.ItemDataRole.ForegroundRole and row.grade == PLACEHOLDER_GRADE:
+                return QColor(TEXT_SECONDARY)
+        elif column == COL_REMOVE:
+            if role == Qt.ItemDataRole.DisplayRole:
+                return "Remove"
+            if role == Qt.ItemDataRole.ForegroundRole:
+                return QColor(DANGER_COLOR)
+            if role == Qt.ItemDataRole.ToolTipRole:
+                return f"Remove {Path(row.path).name} from the training set"
+        return None
+
+    def setData(self, index: QModelIndex, value, role: int = Qt.ItemDataRole.EditRole) -> bool:  # noqa: N802
+        if not index.isValid() or index.column() != COL_GRADE or role != Qt.ItemDataRole.EditRole:
+            return False
+        row = self.rows[index.row()]
+        if row.grade == value:
+            return False
+        row.grade = value
+        self.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole])
+        self.grades_changed.emit()
+        return True
+
+    # -- Bulk mutation helpers (kept off the per-row hot path) ---------------
+
+    def paths(self) -> List[str]:
+        return [row.path for row in self.rows]
+
+    def add_rows(self, paths: List[str]) -> None:
+        """Append many rows in a single insert -- far cheaper than inserting one at a time."""
+        if not paths:
+            return
+        first = len(self.rows)
+        last = first + len(paths) - 1
+        self.beginInsertRows(QModelIndex(), first, last)
+        self.rows.extend(_TrainingImageRow(path=path) for path in paths)
+        self.endInsertRows()
+
+    def remove_row_indices(self, indices: List[int]) -> None:
+        for index in sorted(set(indices), reverse=True):
+            if 0 <= index < len(self.rows):
+                self.beginRemoveRows(QModelIndex(), index, index)
+                self.rows.pop(index)
+                self.endRemoveRows()
+
+    def set_grade_for_rows(self, indices: List[int], grade: str) -> int:
+        """Assign ``grade`` to every row index in ``indices``. Returns how many actually changed."""
+        valid = [i for i in indices if 0 <= i < len(self.rows)]
+        changed = [i for i in valid if self.rows[i].grade != grade]
+        for index in changed:
+            self.rows[index].grade = grade
+        if changed:
+            top_left = self.index(min(changed), COL_GRADE)
+            bottom_right = self.index(max(changed), COL_GRADE)
+            self.dataChanged.emit(top_left, bottom_right, [Qt.ItemDataRole.DisplayRole])
+            self.grades_changed.emit()
+        return len(changed)
+
+    def reset_rows_with_unknown_grade(self, valid_grades: List[str]) -> None:
+        """Reset any row whose grade text no longer matches a known label back to the placeholder.
+
+        Called after a grade label is renamed or removed, mirroring how a
+        combo box would no longer contain the old text as an option.
+        """
+        valid = set(valid_grades)
+        affected = [
+            i for i, row in enumerate(self.rows) if row.grade != PLACEHOLDER_GRADE and row.grade not in valid
+        ]
+        for index in affected:
+            self.rows[index].grade = PLACEHOLDER_GRADE
+        if affected:
+            top_left = self.index(min(affected), COL_GRADE)
+            bottom_right = self.index(max(affected), COL_GRADE)
+            self.dataChanged.emit(top_left, bottom_right, [Qt.ItemDataRole.DisplayRole])
+
+    def label_counts(self) -> Tuple[int, int]:
+        total = len(self.rows)
+        labelled = sum(1 for row in self.rows if row.grade != PLACEHOLDER_GRADE)
+        return total, labelled
+
+
+class _GradeDelegate(QStyledItemDelegate):
+    """Combo-box editor for the Grade column, created only while a cell is being edited.
+
+    This is the key difference from the old ``setCellWidget`` approach: no
+    combo box exists at all for a row until the user actually clicks into
+    its Grade cell, so there is no per-row widget overhead at scale.
+    """
+
+    def __init__(self, model: TrainingImagesModel, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self._model = model
+
+    def createEditor(self, parent, option, index):  # noqa: N802 - Qt override
+        combo = QComboBox(parent)
+        combo.addItem(PLACEHOLDER_GRADE)
+        combo.addItems(self._model.grade_labels)
+        combo.setStyleSheet(
+            f"QComboBox {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY};"
+            f"border: 1px solid {BORDER_COLOR}; border-radius: 4px; padding: 3px 6px; font-size: 11px; }}"
+        )
+        combo.currentIndexChanged.connect(lambda _index: self._commit(combo))
+        return combo
+
+    def _commit(self, editor: QComboBox) -> None:
+        self.commitData.emit(editor)
+        self.closeEditor.emit(editor)
+
+    def setEditorData(self, editor: QComboBox, index: QModelIndex) -> None:  # noqa: N802
+        current = index.data(Qt.ItemDataRole.EditRole) or PLACEHOLDER_GRADE
+        found = editor.findText(current)
+        editor.setCurrentIndex(found if found >= 0 else 0)
+
+    def setModelData(self, editor: QComboBox, model, index: QModelIndex) -> None:  # noqa: N802
+        model.setData(index, editor.currentText(), Qt.ItemDataRole.EditRole)
+
+    def updateEditorGeometry(self, editor, option, index: QModelIndex) -> None:  # noqa: N802
+        editor.setGeometry(option.rect)
 
 
 class _FolderImportDialog(QDialog):
@@ -250,9 +474,12 @@ class TrainPage(QWidget):
         self.main_window = main_window
 
         self._grade_labels: List[str] = list(DEFAULT_GRADE_LABELS)
-        self._image_rows: List[_TrainingImageRow] = []
+        self._model = TrainingImagesModel(self)
+        self._model.grade_labels = list(self._grade_labels)
+        self._model.grades_changed.connect(self._on_grades_changed)
 
-        self._table: Optional[QTableWidget] = None
+        self._table: Optional[QTableView] = None
+        self._grade_delegate: Optional[_GradeDelegate] = None
         self._image_status_label: Optional[QLabel] = None
         self._add_images_button: Optional[QPushButton] = None
         self._import_folder_button: Optional[QPushButton] = None
@@ -403,30 +630,40 @@ class TrainPage(QWidget):
 
         layout.addLayout(self._build_bulk_assign_toolbar())
 
-        self._table = QTableWidget(0, 3)
-        self._table.setHorizontalHeaderLabels(["Filename", "Grade", ""])
+        self._table = QTableView()
+        self._table.setModel(self._model)
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # AllEditTriggers only matters for the Grade column: TrainingImagesModel.flags()
+        # marks Filename/Remove as non-editable, so clicks there just select/act.
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         self._table.setShowGrid(False)
         self._table.setFixedHeight(220)
+        # QTableView only renders rows intersecting the viewport (standard Qt
+        # virtualization) -- no extra work is needed to support 10,000+ rows.
+        self._table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_table_context_menu)
+        self._table.clicked.connect(self._on_table_clicked)
+
+        self._grade_delegate = _GradeDelegate(self._model, self._table)
+        self._table.setItemDelegateForColumn(COL_GRADE, self._grade_delegate)
+
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(1, 148)
-        self._table.setColumnWidth(2, 68)
+        header.setSectionResizeMode(COL_FILENAME, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COL_GRADE, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(COL_REMOVE, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(COL_GRADE, 148)
+        self._table.setColumnWidth(COL_REMOVE, 68)
         self._table.setStyleSheet(
             f"""
-            QTableWidget {{
+            QTableView {{
                 background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
                 border: 1px solid {BORDER_COLOR}; border-radius: 6px; gridline-color: {BORDER_COLOR};
             }}
-            QTableWidget::item {{ padding: 4px; }}
-            QTableWidget::item:selected {{ background-color: rgba(232, 168, 56, 45); color: {TEXT_PRIMARY}; }}
+            QTableView::item {{ padding: 4px; }}
+            QTableView::item:selected {{ background-color: rgba(232, 168, 56, 45); color: {TEXT_PRIMARY}; }}
             QHeaderView::section {{
                 background-color: {SURFACE_COLOR}; color: {TEXT_SECONDARY}; border: none;
                 padding: 6px; font-size: 11px; font-weight: 600;
@@ -796,20 +1033,33 @@ class TrainPage(QWidget):
         unbind_page_shortcuts(self._shortcut_bindings)
 
     def _sync_from_main_window(self) -> None:
+        """Pull any newly-sent paths from ``main_window.training_images``.
+
+        Paths are trusted at this point rather than re-validated (that would
+        mean re-opening every file synchronously on the UI thread, which
+        defeats the purpose at 10,000+ images); a corrupt/unreadable file
+        will surface later as a training failure via ``_on_training_failed``
+        instead of blocking the sync itself.
+        """
         if self.main_window is None:
             return
         incoming = getattr(self.main_window, "training_images", None)
         if not incoming:
             return
 
-        existing_paths = {row.path for row in self._image_rows}
+        existing_paths = set(self._model.paths())
+        new_paths: List[str] = []
         for entry in incoming:
             path = entry.get("path")
-            image = entry.get("image")
-            if not path or image is None or path in existing_paths:
+            if not path or path in existing_paths:
                 continue
-            self._add_training_image(path, image)
+            new_paths.append(path)
             existing_paths.add(path)
+
+        if new_paths:
+            self._model.add_rows(new_paths)
+            self._update_image_status_label()
+            self._update_label_completion()
 
     def _on_add_more_images(self) -> None:
         file_filter = "Images (*.jpg *.jpeg *.png *.tif)"
@@ -852,26 +1102,38 @@ class TrainPage(QWidget):
     def _load_and_add_images(
         self, paths: List[str], assign_grade: Optional[str] = None
     ) -> Tuple[int, List[str]]:
-        """Load and append each path as a training image, skipping duplicates/unsupported/corrupt files."""
-        added = 0
+        """Validate and append each path as a training image row.
+
+        Validation only opens/``verify()``s the file header -- far cheaper
+        than fully decoding pixel data -- so this stays quick even for large
+        batches; no decoded image is kept afterwards.
+        """
+        existing_paths = set(self._model.paths())
+        valid_paths: List[str] = []
         failed_names: List[str] = []
+
         for path in paths:
-            if not path.lower().endswith(SUPPORTED_EXTENSIONS):
-                continue
-            if any(row.path == path for row in self._image_rows):
+            if not path.lower().endswith(SUPPORTED_EXTENSIONS) or path in existing_paths:
                 continue
             try:
                 with Image.open(path) as opened:
-                    opened.load()
-                    image = opened.convert("RGB")
+                    opened.verify()
             except (OSError, ValueError):
                 failed_names.append(Path(path).name)
                 continue
-            self._add_training_image(path, image)
+            valid_paths.append(path)
+            existing_paths.add(path)
+
+        if valid_paths:
+            start_index = len(self._model.rows)
+            self._model.add_rows(valid_paths)
             if assign_grade:
-                self._image_rows[-1].combo.setCurrentText(assign_grade)
-            added += 1
-        return added, failed_names
+                new_indices = list(range(start_index, start_index + len(valid_paths)))
+                self._model.set_grade_for_rows(new_indices, assign_grade)
+            self._update_image_status_label()
+            self._update_label_completion()
+
+        return len(valid_paths), failed_names
 
     def _report_failed_loads(self, failed_names: List[str]) -> None:
         names = ", ".join(failed_names[:3])
@@ -880,64 +1142,19 @@ class TrainPage(QWidget):
         count_word = "image" if len(failed_names) == 1 else "images"
         self._show_status_error(f"Could not load {len(failed_names)} {count_word}: {names}")
 
-    def _add_training_image(self, path: str, image: Image.Image) -> None:
-        if any(row.path == path for row in self._image_rows):
+    def _on_table_clicked(self, index: QModelIndex) -> None:
+        if not index.isValid() or index.column() != COL_REMOVE:
             return
-
-        row_index = self._table.rowCount()
-        self._table.insertRow(row_index)
-
-        filename_item = QTableWidgetItem(Path(path).name)
-        filename_item.setFlags(filename_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        filename_item.setToolTip(path)
-        self._table.setItem(row_index, 0, filename_item)
-
-        combo = QComboBox()
-        self._populate_grade_combo(combo)
-        combo.setStyleSheet(
-            f"QComboBox {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY};"
-            f"border: 1px solid {BORDER_COLOR}; border-radius: 4px; padding: 3px 6px; font-size: 11px; }}"
-        )
-        self._table.setCellWidget(row_index, 1, combo)
-
-        remove_button = QPushButton("Remove")
-        remove_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        remove_button.setToolTip(f"Remove {Path(path).name} from the training set")
-        remove_button.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {DANGER_COLOR}; border: none;"
-            f"font-size: 11px; padding: 2px; }}"
-            f"QPushButton:hover {{ text-decoration: underline; }}"
-        )
-        self._table.setCellWidget(row_index, 2, remove_button)
-
-        row = _TrainingImageRow(path=path, image=image, combo=combo, remove_button=remove_button)
-        combo.currentIndexChanged.connect(lambda _index: self._on_row_grade_changed())
-        remove_button.clicked.connect(lambda _checked, r=row: self._remove_training_image(r))
-
-        self._image_rows.append(row)
+        self._model.remove_row_indices([index.row()])
         self._update_image_status_label()
         self._update_label_completion()
 
-    def _remove_training_image(self, row: _TrainingImageRow) -> None:
-        if row not in self._image_rows:
-            return
-        index = self._image_rows.index(row)
-        self._table.removeRow(index)
-        self._image_rows.pop(index)
+    def _on_grades_changed(self) -> None:
         self._update_image_status_label()
         self._update_label_completion()
-
-    def _on_row_grade_changed(self) -> None:
-        self._update_image_status_label()
-        self._update_label_completion()
-
-    def _label_counts(self) -> Tuple[int, int]:
-        total = len(self._image_rows)
-        labelled = sum(1 for row in self._image_rows if row.combo.currentText() != PLACEHOLDER_GRADE)
-        return total, labelled
 
     def _update_image_status_label(self) -> None:
-        total, labelled = self._label_counts()
+        total, labelled = self._model.label_counts()
         if total == 0:
             self._image_status_label.setText("No images loaded yet.")
             return
@@ -946,7 +1163,7 @@ class TrainPage(QWidget):
     def _update_label_completion(self) -> None:
         if self._label_completion_label is None:
             return
-        total, labelled = self._label_counts()
+        total, labelled = self._model.label_counts()
         self._label_completion_label.setText(f"{labelled} of {total} images labelled")
 
         all_labelled = total > 0 and labelled == total
@@ -968,18 +1185,10 @@ class TrainPage(QWidget):
 
     # -- Grade label management ----------------------------------------------
 
-    def _populate_grade_combo(self, combo: QComboBox, current_text: str = "") -> None:
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem(PLACEHOLDER_GRADE)
-        combo.addItems(self._grade_labels)
-        index = combo.findText(current_text) if current_text else -1
-        combo.setCurrentIndex(index if index > 0 else 0)
-        combo.blockSignals(False)
-
     def _refresh_grade_dropdowns(self) -> None:
-        for row in self._image_rows:
-            self._populate_grade_combo(row.combo, current_text=row.combo.currentText())
+        self._model.grade_labels = list(self._grade_labels)
+        self._model.reset_rows_with_unknown_grade(self._grade_labels)
+
         if self._bulk_grade_combo is not None:
             current = self._bulk_grade_combo.currentText()
             self._bulk_grade_combo.blockSignals(True)
@@ -1074,13 +1283,11 @@ class TrainPage(QWidget):
             self._show_status_error("Select at least one image in the table first.")
             return
 
-        rows = [self._image_rows[index] for index in selected_indices if index < len(self._image_rows)]
-        self._apply_grade_to_rows(rows, grade)
-        self._show_bulk_status(f"Grade assigned to {len(rows)} image(s).")
+        self._assign_grade_with_status(selected_indices, grade)
 
-    def _apply_grade_to_rows(self, rows: List[_TrainingImageRow], grade: str) -> None:
-        for row in rows:
-            row.combo.setCurrentText(grade)
+    def _assign_grade_with_status(self, indices: List[int], grade: str) -> None:
+        self._model.set_grade_for_rows(indices, grade)
+        self._show_bulk_status(f"Grade assigned to {len(indices)} image(s).")
 
     def _show_bulk_status(self, message: str) -> None:
         if self._bulk_status_label is None:
@@ -1098,7 +1305,7 @@ class TrainPage(QWidget):
 
     def _show_table_context_menu(self, pos: QPoint) -> None:
         index = self._table.indexAt(pos)
-        if not index.isValid() or index.row() >= len(self._image_rows):
+        if not index.isValid() or index.row() >= len(self._model.rows):
             return
         clicked_row_index = index.row()
 
@@ -1106,9 +1313,6 @@ class TrainPage(QWidget):
         if clicked_row_index not in selected_indices:
             self._table.selectRow(clicked_row_index)
             selected_indices = [clicked_row_index]
-
-        clicked_row = self._image_rows[clicked_row_index]
-        selected_rows = [self._image_rows[i] for i in selected_indices if i < len(self._image_rows)]
 
         menu = QMenu(self)
         menu.setStyleSheet(
@@ -1124,32 +1328,29 @@ class TrainPage(QWidget):
         for label in self._grade_labels:
             action = assign_this_menu.addAction(label)
             action.triggered.connect(
-                lambda _checked=False, r=clicked_row, g=label: self._apply_grade_to_rows_with_status([r], g)
+                lambda _checked=False, r=clicked_row_index, g=label: self._assign_grade_with_status([r], g)
             )
 
-        assign_selected_menu = menu.addMenu(f"Assign grade to all selected images ({len(selected_rows)})")
+        assign_selected_menu = menu.addMenu(f"Assign grade to all selected images ({len(selected_indices)})")
         for label in self._grade_labels:
             action = assign_selected_menu.addAction(label)
             action.triggered.connect(
-                lambda _checked=False, rs=selected_rows, g=label: self._apply_grade_to_rows_with_status(rs, g)
+                lambda _checked=False, rs=list(selected_indices), g=label: self._assign_grade_with_status(rs, g)
             )
 
         menu.addSeparator()
         remove_action = menu.addAction("Remove from training set")
-        remove_action.triggered.connect(lambda: self._remove_selected_or_clicked(selected_rows, clicked_row))
+        remove_action.triggered.connect(
+            lambda: self._remove_selected_or_clicked(selected_indices, clicked_row_index)
+        )
 
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
-    def _apply_grade_to_rows_with_status(self, rows: List[_TrainingImageRow], grade: str) -> None:
-        self._apply_grade_to_rows(rows, grade)
-        self._show_bulk_status(f"Grade assigned to {len(rows)} image(s).")
-
-    def _remove_selected_or_clicked(
-        self, selected_rows: List[_TrainingImageRow], clicked_row: _TrainingImageRow
-    ) -> None:
-        rows_to_remove = selected_rows if len(selected_rows) > 1 else [clicked_row]
-        for row in list(rows_to_remove):
-            self._remove_training_image(row)
+    def _remove_selected_or_clicked(self, selected_indices: List[int], clicked_row_index: int) -> None:
+        indices_to_remove = selected_indices if len(selected_indices) > 1 else [clicked_row_index]
+        self._model.remove_row_indices(indices_to_remove)
+        self._update_image_status_label()
+        self._update_label_completion()
 
     # -- Training lifecycle ---------------------------------------------------
 
@@ -1180,11 +1381,11 @@ class TrainPage(QWidget):
             return
 
         assigned = [
-            (row.image, row.combo.currentText())
-            for row in self._image_rows
-            if row.combo.currentText() != PLACEHOLDER_GRADE
+            (row.path, row.grade)
+            for row in self._model.rows
+            if row.grade != PLACEHOLDER_GRADE
         ]
-        unassigned_count = len(self._image_rows) - len(assigned)
+        unassigned_count = len(self._model.rows) - len(assigned)
         if unassigned_count > 0:
             self._show_status_error(f"{unassigned_count} image(s) still need a grade assigned.")
             return
@@ -1197,7 +1398,7 @@ class TrainPage(QWidget):
 
         grade_labels = list(self._grade_labels)
         label_to_index = {label: index for index, label in enumerate(grade_labels)}
-        samples = [(image, label_to_index[label]) for image, label in assigned]
+        samples = [(path, label_to_index[label]) for path, label in assigned]
 
         try:
             train_samples, val_samples = self._split_samples(samples, self._val_split_slider.value() / 100.0)
@@ -1210,8 +1411,23 @@ class TrainPage(QWidget):
         model = BitumenCNN(num_classes=len(grade_labels), pretrained=use_pretrained)
 
         batch_size = int(self._batch_size_combo.currentText())
-        train_loader = DataLoader(_ImageGradeDataset(train_samples, train=True), batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(_ImageGradeDataset(val_samples, train=False), batch_size=batch_size, shuffle=False)
+
+        # Stream images from disk via background worker processes rather than
+        # holding every decoded image in RAM -- see _ImageGradeDataset and
+        # _default_num_workers for why this scales to very large datasets.
+        num_workers = _default_num_workers()
+        loader_kwargs = {"num_workers": num_workers}
+        if num_workers > 0:
+            loader_kwargs["persistent_workers"] = True
+        if torch.cuda.is_available():
+            loader_kwargs["pin_memory"] = True
+
+        train_loader = DataLoader(
+            _ImageGradeDataset(train_samples, train=True), batch_size=batch_size, shuffle=True, **loader_kwargs
+        )
+        val_loader = DataLoader(
+            _ImageGradeDataset(val_samples, train=False), batch_size=batch_size, shuffle=False, **loader_kwargs
+        )
 
         trainer = ModelTrainer(
             model=model,
@@ -1233,8 +1449,8 @@ class TrainPage(QWidget):
 
     @staticmethod
     def _split_samples(
-        samples: List[Tuple[Image.Image, int]], val_fraction: float
-    ) -> Tuple[List[Tuple[Image.Image, int]], List[Tuple[Image.Image, int]]]:
+        samples: List[Tuple[str, int]], val_fraction: float
+    ) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
         labels = [label for _, label in samples]
         label_counts = Counter(labels)
         can_stratify = all(count >= 2 for count in label_counts.values())
@@ -1363,18 +1579,12 @@ class TrainPage(QWidget):
             self._select_none_button,
             self._bulk_grade_combo,
             self._apply_bulk_button,
+            self._table,
         ):
             if widget is not None:
                 widget.setEnabled(not active)
 
-        if active:
-            for row in self._image_rows:
-                row.combo.setEnabled(False)
-                row.remove_button.setEnabled(False)
-        else:
-            for row in self._image_rows:
-                row.combo.setEnabled(True)
-                row.remove_button.setEnabled(True)
+        if not active:
             self._update_grade_buttons_enabled()
 
     def _on_view_library_requested(self) -> None:
