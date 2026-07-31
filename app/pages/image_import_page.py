@@ -475,8 +475,12 @@ class ImageImportPage(QWidget):
 
     def _build_dataset_warning_banner(self) -> QFrame:
         banner = QFrame()
+        banner.setObjectName("datasetWarningBanner")
         banner.setStyleSheet(
-            f"QFrame {{ background-color: rgba(232, 168, 56, 30); border: 1px solid {ACCENT_COLOR};"
+            # Scoped to #datasetWarningBanner -- QLabel is a QFrame subclass
+            # in Qt, so a bare "QFrame" selector would also draw this border
+            # around the nested label, not just the banner.
+            f"QFrame#datasetWarningBanner {{ background-color: rgba(232, 168, 56, 30); border: 1px solid {ACCENT_COLOR};"
             f"border-radius: 8px; }}"
         )
         layout = QHBoxLayout(banner)

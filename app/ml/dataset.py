@@ -1,18 +1,21 @@
+import math
 import os
 import random
 from pathlib import Path
 
-import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
 from torchvision import transforms
 
+from app.utils.data_io import read_labels_file
+
 
 class RegressionDataset(Dataset):
     """Loads bitumen sample images and their (Water, Solids, Bitumen) regression targets.
 
-    Rows are read from a CSV (columns: Image, Pan, Water, Solids, Bitumen)
+    Rows are read from a CSV/text file or Excel workbook (columns: Image,
+    Pan, Water, Solids, Bitumen -- see ``app.utils.data_io.read_labels_file``)
     and matched against image files in ``image_dir``. The matched set is
     shuffled deterministically and split into train/val portions; whichever
     portion this instance represents (``split``) is exposed via ``__len__``/
@@ -33,7 +36,7 @@ class RegressionDataset(Dataset):
         self.normalise = normalise
         self.seed = seed
 
-        df = pd.read_csv(csv_path)
+        df = read_labels_file(csv_path)
         missing_columns = [column for column in self.EXPECTED_COLUMNS if column not in df.columns]
         if missing_columns:
             raise ValueError(f"CSV is missing expected columns: {missing_columns}")
@@ -44,6 +47,10 @@ class RegressionDataset(Dataset):
 
         self.matched = []
         self.unmatched = []
+        #: Rows whose image file *was* found, but whose Water/Solids/Bitumen/
+        #: Pan values couldn't be parsed as numbers (typos, blank cells,
+        #: stray text, etc.). Each entry is {"image": str, "reason": str}.
+        self.invalid_rows = []
 
         for _, row in df.iterrows():
             image_value = str(row["Image"])
@@ -64,13 +71,25 @@ class RegressionDataset(Dataset):
                 self.unmatched.append(image_value)
                 continue
 
+            try:
+                water = self._parse_float(row["Water"], "Water")
+                solids = self._parse_float(row["Solids"], "Solids")
+                bitumen = self._parse_float(row["Bitumen"], "Bitumen")
+                pan = self._parse_pan(row["Pan"])
+            except ValueError as exc:
+                # A bad value in one row (e.g. a typo like "1repeated" in the
+                # Pan column) shouldn't abort matching for every other row --
+                # skip just this one and surface it in get_match_summary().
+                self.invalid_rows.append({"image": image_value, "reason": str(exc)})
+                continue
+
             self.matched.append(
                 {
                     "image_path": self.image_dir / matched_name,
-                    "water": float(row["Water"]),
-                    "solids": float(row["Solids"]),
-                    "bitumen": float(row["Bitumen"]),
-                    "pan": int(row["Pan"]),
+                    "water": water,
+                    "solids": solids,
+                    "bitumen": bitumen,
+                    "pan": pan,
                 }
             )
 
@@ -111,6 +130,32 @@ class RegressionDataset(Dataset):
         self.transforms = self.train_transforms if split == "train" else self.val_transforms
 
     @staticmethod
+    def _parse_float(raw_value, column_name):
+        """Parse a Water/Solids/Bitumen cell, raising a friendly ``ValueError`` on failure."""
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{column_name}={raw_value!r} is not a valid number") from None
+        if math.isnan(value):
+            raise ValueError(f"{column_name} is missing/blank")
+        return value
+
+    @staticmethod
+    def _parse_pan(raw_value):
+        """Parse a Pan cell as an int, tolerating float-like strings (e.g. "3.0")."""
+        try:
+            return int(raw_value)
+        except (TypeError, ValueError):
+            pass
+        try:
+            as_float = float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"Pan={raw_value!r} is not a valid whole number") from None
+        if math.isnan(as_float):
+            raise ValueError("Pan is missing/blank")
+        return int(as_float)
+
+    @staticmethod
     def _compute_mean_std(values):
         count = len(values)
         if count == 0:
@@ -148,6 +193,8 @@ class RegressionDataset(Dataset):
             "matched": len(self.matched),
             "unmatched": len(self.unmatched),
             "unmatched_files": list(self.unmatched),
+            "invalid": len(self.invalid_rows),
+            "invalid_rows": list(self.invalid_rows),
             "match_rate": match_rate,
         }
 

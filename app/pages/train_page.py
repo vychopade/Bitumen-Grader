@@ -59,6 +59,8 @@ from app.ml.cnn_model import BitumenRegressor
 from app.ml.dataset import RegressionDataset
 from app.ml.trainer import RegressionTrainer, RegressionTrainingResult
 from app.pages.model_manager_page import ModelManagerPage
+from app.utils.data_io import SUPPORTED_EXTENSIONS as SUPPORTED_LABEL_EXTENSIONS
+from app.utils.data_io import read_labels_file
 from app.utils.model_io import load_model_metadata, save_model
 from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
 
@@ -157,7 +159,7 @@ class _CsvDropZone(QFrame):
 
     file_selected = pyqtSignal(str)
 
-    _SUPPORTED_EXTENSIONS = (".csv", ".txt")
+    _SUPPORTED_EXTENSIONS = SUPPORTED_LABEL_EXTENSIONS
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -173,12 +175,12 @@ class _CsvDropZone(QFrame):
         layout.setSpacing(6)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("Drag & drop your CSV file here")
+        title = QLabel("Drag & drop your CSV or Excel file here")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600; background: transparent;")
         layout.addWidget(title)
 
-        subtitle = QLabel("Accepts .csv and .txt files.")
+        subtitle = QLabel("Accepts .csv, .txt, .xlsx, and .xls files.")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         layout.addWidget(subtitle)
@@ -203,7 +205,13 @@ class _CsvDropZone(QFrame):
         )
 
     def _browse_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select CSV File", "", "CSV Files (*.csv *.txt)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Label File",
+            "",
+            "All Supported Files (*.csv *.txt *.xlsx *.xls);;CSV Files (*.csv);;"
+            "Excel Files (*.xlsx *.xls);;Text Files (*.txt)",
+        )
         if path:
             self.file_selected.emit(path)
 
@@ -239,13 +247,14 @@ class _CsvDropZone(QFrame):
 
 
 class _MatchSummaryCard(QFrame):
-    """Shows "N of M images matched" plus an expandable list of unmatched filenames."""
+    """Shows "N of M images matched" plus expandable lists of unmatched filenames and invalid rows."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setStyleSheet(f"QFrame {{ background-color: {BACKGROUND_COLOR}; border-radius: 6px; }}")
 
         self._unmatched_count = 0
+        self._invalid_count = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
@@ -254,6 +263,14 @@ class _MatchSummaryCard(QFrame):
         self._summary_label = QLabel("")
         self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
+
+        self._invalid_summary_label = QLabel("")
+        self._invalid_summary_label.setWordWrap(True)
+        self._invalid_summary_label.setStyleSheet(
+            f"color: {DANGER_COLOR}; font-size: 12px; font-weight: 600; background: transparent;"
+        )
+        self._invalid_summary_label.setVisible(False)
+        layout.addWidget(self._invalid_summary_label)
 
         self._tip_label = QLabel("")
         self._tip_label.setWordWrap(True)
@@ -277,6 +294,23 @@ class _MatchSummaryCard(QFrame):
         self._unmatched_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         self._unmatched_label.setVisible(False)
         layout.addWidget(self._unmatched_label)
+
+        self._invalid_toggle_button = QPushButton("")
+        self._invalid_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._invalid_toggle_button.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {DANGER_COLOR}; border: none;"
+            f"text-decoration: underline; font-size: 11px; text-align: left; padding: 0px; }}"
+            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
+        )
+        self._invalid_toggle_button.clicked.connect(self._toggle_invalid)
+        self._invalid_toggle_button.setVisible(False)
+        layout.addWidget(self._invalid_toggle_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._invalid_rows_label = QLabel("")
+        self._invalid_rows_label.setWordWrap(True)
+        self._invalid_rows_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        self._invalid_rows_label.setVisible(False)
+        layout.addWidget(self._invalid_rows_label)
 
     def update_summary(self, match_summary: Dict) -> None:
         matched = match_summary["matched"]
@@ -317,6 +351,35 @@ class _MatchSummaryCard(QFrame):
 
         self._unmatched_label.setVisible(False)
         self.toggle_button.setText(f"Show unmatched filenames ({self._unmatched_count}) \u25be")
+
+        invalid_rows: List[Dict] = list(match_summary.get("invalid_rows", []))
+        self._invalid_count = len(invalid_rows)
+        if invalid_rows:
+            word = "row" if self._invalid_count == 1 else "rows"
+            self._invalid_summary_label.setText(
+                f"{self._invalid_count} {word} skipped \u2014 could not read their Water/Solids/Bitumen/Pan values."
+            )
+            self._invalid_summary_label.setVisible(True)
+
+            preview = invalid_rows[:MAX_UNMATCHED_PREVIEW]
+            text = "\n".join(f"\u201c{entry['image']}\u201d \u2014 {entry['reason']}" for entry in preview)
+            if len(invalid_rows) > len(preview):
+                text += f"\n\u2026and {len(invalid_rows) - len(preview)} more"
+            self._invalid_rows_label.setText(text)
+            self._invalid_toggle_button.setVisible(True)
+        else:
+            self._invalid_summary_label.setVisible(False)
+            self._invalid_toggle_button.setVisible(False)
+
+        self._invalid_rows_label.setVisible(False)
+        self._invalid_toggle_button.setText(f"Show invalid rows ({self._invalid_count}) \u25be")
+
+    def _toggle_invalid(self) -> None:
+        showing = not self._invalid_rows_label.isVisible()
+        self._invalid_rows_label.setVisible(showing)
+        verb = "Hide" if showing else "Show"
+        arrow = "\u25b4" if showing else "\u25be"
+        self._invalid_toggle_button.setText(f"{verb} invalid rows ({self._invalid_count}) {arrow}")
 
     def _toggle_unmatched(self) -> None:
         showing = not self._unmatched_label.isVisible()
@@ -547,8 +610,8 @@ class TrainPage(QWidget):
         header.addWidget(title)
 
         subtitle = QLabel(
-            "Load your CSV and image folder, configure settings, and train a model to "
-            "predict Water, Solids, and Bitumen content."
+            "Load your labelled CSV/Excel file and image folder, configure settings, and "
+            "train a model to predict Water, Solids, and Bitumen content."
         )
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
@@ -602,7 +665,7 @@ class TrainPage(QWidget):
         return container
 
     def _build_csv_section(self) -> QFrame:
-        section, layout = self._make_section_frame("Step 1 \u2014 Load CSV File")
+        section, layout = self._make_section_frame("Step 1 \u2014 Load CSV / Excel File")
 
         self._csv_drop_zone = _CsvDropZone()
         self._csv_drop_zone.file_selected.connect(self._on_csv_selected)
@@ -616,8 +679,12 @@ class TrainPage(QWidget):
         layout.addWidget(self._csv_loaded_label)
 
         self._csv_error_banner = QFrame()
+        self._csv_error_banner.setObjectName("csvErrorBanner")
         self._csv_error_banner.setStyleSheet(
-            f"QFrame {{ background-color: rgba(229, 72, 77, 25); border: 1px solid {DANGER_COLOR};"
+            # Scoped to #csvErrorBanner -- QLabel is a QFrame subclass in Qt,
+            # so a bare "QFrame" selector would also draw this border around
+            # the word-wrapped error label nested inside, not just the banner.
+            f"QFrame#csvErrorBanner {{ background-color: rgba(229, 72, 77, 25); border: 1px solid {DANGER_COLOR};"
             f"border-radius: 6px; }}"
         )
         error_layout = QVBoxLayout(self._csv_error_banner)
@@ -944,9 +1011,9 @@ class TrainPage(QWidget):
 
     def _on_csv_selected(self, path: str) -> None:
         try:
-            df = pd.read_csv(path)
+            df = read_labels_file(path)
         except Exception as exc:  # noqa: BLE001 - surface any parse failure to the user
-            self._show_status_error(f"Could not read CSV file: {exc}")
+            self._show_status_error(f"Could not read label file: {exc}")
             return
 
         self._csv_path = path

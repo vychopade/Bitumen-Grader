@@ -249,8 +249,13 @@ class ProgressPanel(QWidget):
 
     def _build_completion_banner(self) -> QFrame:
         self._completion_banner = QFrame()
+        self._completion_banner.setObjectName("completionBanner")
         self._completion_banner.setStyleSheet(
-            f"QFrame {{ background-color: {SUCCESS_BG}; border: 1px solid {SUCCESS_COLOR}; border-radius: 8px; }}"
+            # Scoped to #completionBanner -- QLabel is a QFrame subclass in
+            # Qt, so a bare "QFrame" selector would also draw this border
+            # around the nested message label, not just the banner.
+            f"QFrame#completionBanner {{ background-color: {SUCCESS_BG}; border: 1px solid {SUCCESS_COLOR};"
+            f"border-radius: 8px; }}"
         )
 
         row = QHBoxLayout(self._completion_banner)
@@ -280,8 +285,13 @@ class ProgressPanel(QWidget):
 
     def _build_early_stop_banner(self) -> QFrame:
         self._early_stop_banner = QFrame()
+        self._early_stop_banner.setObjectName("earlyStopBanner")
         self._early_stop_banner.setStyleSheet(
-            f"QFrame {{ background-color: {WARNING_BG}; border: 1px solid {ACCENT_COLOR}; border-radius: 8px; }}"
+            # Scoped to #earlyStopBanner -- QLabel is a QFrame subclass in
+            # Qt, so a bare "QFrame" selector would also draw this border
+            # around the nested message label, not just the banner.
+            f"QFrame#earlyStopBanner {{ background-color: {WARNING_BG}; border: 1px solid {ACCENT_COLOR};"
+            f"border-radius: 8px; }}"
         )
 
         row = QHBoxLayout(self._early_stop_banner)

@@ -3,6 +3,8 @@ torchvision
 PyQt6
 Pillow
 numpy
+pandas
+openpyxl
 scikit-learn
 matplotlib
 pytest

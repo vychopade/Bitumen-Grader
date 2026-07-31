@@ -463,6 +463,7 @@ class _PanGradeCard(QFrame):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.setObjectName("panGradeCard")
         self._apply_frame_style(TEXT_SECONDARY)
 
         layout = QVBoxLayout(self)
@@ -479,8 +480,12 @@ class _PanGradeCard(QFrame):
         layout.addWidget(secondary_label)
 
     def _apply_frame_style(self, color: str) -> None:
+        # Scoped to #panGradeCard -- QLabel is a QFrame subclass in Qt, so a
+        # bare "QFrame" selector would also draw this left-border stripe
+        # around the nested title/secondary QLabels, not just the card.
         self.setStyleSheet(
-            f"QFrame {{ background-color: {BACKGROUND_COLOR}; border-radius: 6px; border-left: 4px solid {color}; }}"
+            f"QFrame#panGradeCard {{ background-color: {BACKGROUND_COLOR}; border-radius: 6px;"
+            f"border-left: 4px solid {color}; }}"
         )
 
     def set_grade(self, grade: int) -> None:
@@ -761,8 +766,13 @@ class PredictPage(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         banner = _ClickableBanner()
+        banner.setObjectName("noModelBanner")
         banner.setStyleSheet(
-            f"QFrame {{ background-color: rgba(232, 168, 56, 30); border: 1px solid {ACCENT_COLOR};"
+            # Scoped to #noModelBanner rather than the bare "QFrame" type
+            # selector -- QLabel is itself a QFrame subclass in Qt, so an
+            # unscoped rule here would also draw this border around the
+            # word-wrapped message label nested inside, not just the banner.
+            f"QFrame#noModelBanner {{ background-color: rgba(232, 168, 56, 30); border: 1px solid {ACCENT_COLOR};"
             f"border-radius: 8px; }}"
         )
         banner.clicked.connect(self._navigate_to_model_library)
