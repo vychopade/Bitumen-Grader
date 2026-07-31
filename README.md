@@ -1,6 +1,6 @@
 # BitumenGrader
 
-BitumenGrader is a PyQt6 desktop application that trains and runs a convolutional neural network (CNN) to classify photographs of bitumen samples into performance grades (e.g. PG 52-28, PG 64-22), with full workflows for importing/editing images, training models, grading new images, and managing saved models.
+BitumenGrader is a PyQt6 desktop application that trains and runs a convolutional neural network (CNN) regressor to predict Water, Solids, and Bitumen composition percentages from photographs of bitumen samples, with full workflows for importing/editing images, training models, grading new images, and managing saved models.
 
 ## Installation
 
@@ -27,7 +27,7 @@ For a full walkthrough written for non-technical users -- installation, grading 
 
 ## Tests
 
-A small offline smoke-test suite covers the ML backend (`BitumenCNN`, `ModelPredictor`, and model save/load round-tripping):
+A small offline smoke-test suite covers the ML backend (`BitumenRegressor`, `RegressionPredictor`, `RegressionDataset`, and model save/load round-tripping):
 
 ```bash
 python -m pytest tests/smoke_test.py -v

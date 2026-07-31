@@ -234,7 +234,7 @@ class ModelManagerPage(QWidget):
         message.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 14px; background: transparent;")
         layout.addWidget(message, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        train_link = QPushButton("Train a Model")
+        train_link = QPushButton("Train a Model \u2192")
         train_link.setObjectName("trainModelLink")
         train_link.setCursor(Qt.CursorShape.PointingHandCursor)
         train_link.setStyleSheet(

@@ -11,7 +11,7 @@ import torch
 from PIL import Image
 from torchvision import transforms
 
-#: Spatial resolution expected by BitumenCNN's ResNet-18 backbone.
+#: Spatial resolution expected by BitumenRegressor's ResNet-18 backbone.
 IMAGE_SIZE = 224
 
 #: Standard ImageNet normalization statistics, matching the data the

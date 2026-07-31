@@ -1,98 +1,83 @@
-"""
-Inference helper.
-
-Provides a thin wrapper around a loaded CNN model that handles preprocessing
-an input image and running a forward pass to produce a predicted grade/class
-and associated confidence scores.
-"""
-from __future__ import annotations
-
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+import logging
 
 import torch
 from PIL import Image
+from torchvision import transforms
 
-from app.ml.cnn_model import DEFAULT_GRADE_LABELS, BitumenCNN
-from app.utils.image_utils import preprocess_for_inference
-from app.utils.model_io import load_model_metadata
+from app.ml.cnn_model import BitumenRegressor
+
+logger = logging.getLogger(__name__)
 
 
-class ModelPredictor:
-    """Loads a trained ``BitumenCNN`` checkpoint and runs inference on images.
+class RegressionPredictor:
+    """Loads a trained ``BitumenRegressor`` checkpoint and runs inference on images.
 
-    On construction, looks for a sidecar ``.json`` metadata file (as written
-    by ``app.utils.model_io.save_model``) next to the ``.pt`` checkpoint to
-    determine the number of classes and grade labels, falling back to
-    ``DEFAULT_GRADE_LABELS`` if none is found or explicit labels are not
-    supplied.
+    Outputs are denormalised back into original percentage units (Water,
+    Solids, Bitumen) using the ``output_stats`` recorded in the model's
+    metadata at training time.
     """
 
-    def __init__(
-        self,
-        model_path: Union[str, Path],
-        grade_labels: Optional[List[str]] = None,
-        device: Optional[Union[str, torch.device]] = None,
-    ):
-        self.device = (
-            torch.device(device)
-            if device is not None
-            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        )
-        self.model_path = Path(model_path)
+    OUTPUT_NAMES = ["Water", "Solids", "Bitumen"]
 
-        metadata = self._load_sidecar_metadata(self.model_path)
-        self.grade_labels: List[str] = grade_labels or metadata.get(
-            "grade_labels", list(DEFAULT_GRADE_LABELS)
-        )
-        num_classes = metadata.get("num_classes", len(self.grade_labels))
+    def __init__(self, model_path, metadata):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+        self.model = BitumenRegressor.from_pretrained(model_path, device)
 
-        self.model = BitumenCNN.from_pretrained(
-            self.model_path, num_classes=num_classes, device=self.device
-        )
-        self.model.to(self.device)
+        self.output_stats = metadata["output_stats"]
+        self.output_names = list(self.OUTPUT_NAMES)
         self.model.eval()
 
-    @staticmethod
-    def _load_sidecar_metadata(model_path: Path) -> Dict[str, Any]:
-        """Load the ``.json`` metadata sitting alongside ``model_path``, if any."""
-        json_path = model_path.with_suffix(".json")
-        if json_path.exists():
-            try:
-                return load_model_metadata(json_path)
-            except (ValueError, OSError):
-                return {}
-        return {}
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
 
-    def predict(self, pil_image: Image.Image) -> Dict[str, Any]:
-        """Run inference on a single image and return the predicted grade.
+    def _denormalise(self, raw_outputs) -> list:
+        """Map (3,) raw model outputs back to clamped [0, 100] original-unit floats."""
+        values = []
+        for index, name in enumerate(self.output_names):
+            stats = self.output_stats[name]
+            value = raw_outputs[index].item() * stats["std"] + stats["mean"]
+            value = max(0.0, min(100.0, value))
+            values.append(float(value))
+        return values
 
-        Args:
-            pil_image: Input image to grade.
-
-        Returns:
-            A dict with keys:
-                - ``grade`` (str): the predicted bitumen grade label.
-                - ``confidence`` (float): predicted probability of ``grade``.
-                - ``all_probabilities`` (dict[str, float]): probability for
-                  every grade label the model can predict.
-        """
-        tensor = preprocess_for_inference(pil_image).unsqueeze(0).to(self.device)
+    def predict(self, pil_image) -> dict:
+        image = pil_image if pil_image.mode == "RGB" else pil_image.convert("RGB")
+        tensor = self.transform(image)
+        tensor = tensor.unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            logits = self.model(tensor)
-            probabilities = torch.softmax(logits, dim=1).squeeze(0)
+            raw_outputs = self.model(tensor)[0]
 
-        all_probabilities = {
-            label: float(probabilities[i].item()) for i, label in enumerate(self.grade_labels)
-        }
-
-        best_idx = int(torch.argmax(probabilities).item())
-        grade = self.grade_labels[best_idx]
-        confidence = float(probabilities[best_idx].item())
+        water, solids, bitumen = self._denormalise(raw_outputs)
+        total_sum = water + solids + bitumen
+        sum_deviation = abs(total_sum - 100.0)
 
         return {
-            "grade": grade,
-            "confidence": confidence,
-            "all_probabilities": all_probabilities,
+            "Water": {"value": water, "unit": "%"},
+            "Solids": {"value": solids, "unit": "%"},
+            "Bitumen": {"value": bitumen, "unit": "%"},
+            "sum": total_sum,
+            "sum_deviation": sum_deviation,
+            "sum_ok": sum_deviation < 5.0,
         }
+
+    def predict_batch(self, image_paths) -> list:
+        results = []
+        for path in image_paths:
+            try:
+                with Image.open(path) as opened:
+                    opened.load()
+                    image = opened.convert("RGB")
+            except (OSError, ValueError) as exc:
+                logger.warning("Could not load image %r for prediction: %s", path, exc)
+                results.append(None)
+                continue
+            results.append(self.predict(image))
+        return results

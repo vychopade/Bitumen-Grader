@@ -4,8 +4,10 @@ Main application window for BitumenGrader.
 Defines the top-level QMainWindow that hosts the left navigation sidebar
 and switches between the app's pages (Import Images, Train Model, Grade
 Images, Model Library) in a QStackedWidget. Also owns the app-wide
-``active_model`` state (currently loaded model path + metadata), which is
-handed to child pages that need it and re-broadcast via the
+``active_model`` state -- the currently loaded model's path, metadata dict,
+and a ready-to-use ``RegressionPredictor`` instance -- which is handed to
+child pages that need it (``PredictPage`` for grading, ``ModelManagerPage``
+for the "active model" card highlight) and re-broadcast via the
 ``active_model_changed`` signal whenever it changes.
 """
 from __future__ import annotations
@@ -33,12 +35,14 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from app.ml.predictor import RegressionPredictor
 from app.pages.image_import_page import ImageImportPage
 from app.pages.model_manager_page import ModelManagerPage
 from app.pages.predict_page import PredictPage
@@ -173,6 +177,7 @@ class _Sidebar(QWidget):
         self._button_group.setExclusive(True)
         self._status_dot: Optional[QLabel] = None
         self._status_label: Optional[QLabel] = None
+        self._status_secondary_label: Optional[QLabel] = None
 
         self._build_ui()
 
@@ -215,20 +220,31 @@ class _Sidebar(QWidget):
 
         pill = QFrame()
         pill.setObjectName("statusPill")
-        row = QHBoxLayout(pill)
-        row.setContentsMargins(10, 7, 10, 7)
-        row.setSpacing(8)
+        pill_layout = QVBoxLayout(pill)
+        pill_layout.setContentsMargins(10, 7, 10, 7)
+        pill_layout.setSpacing(3)
+
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(8)
 
         self._status_dot = QLabel()
         self._status_dot.setFixedSize(8, 8)
-        row.addWidget(self._status_dot)
+        name_row.addWidget(self._status_dot)
 
         self._status_label = QLabel()
         self._status_label.setFont(QFont(self._font_family, 11))
-        row.addWidget(self._status_label, 1)
+        name_row.addWidget(self._status_label, 1)
+        pill_layout.addLayout(name_row)
+
+        self._status_secondary_label = QLabel()
+        self._status_secondary_label.setFont(QFont(self._font_family, 9))
+        self._status_secondary_label.setWordWrap(True)
+        self._status_secondary_label.setStyleSheet(f"color: {TEXT_SECONDARY}; padding-left: 16px;")
+        pill_layout.addWidget(self._status_secondary_label)
 
         outer.addWidget(pill)
-        self.set_active_model_label(None)
+        self.set_active_model_label(None, None)
         return pill_wrapper
 
     def _on_nav_clicked(self, index: int) -> None:
@@ -239,9 +255,17 @@ class _Sidebar(QWidget):
         if 0 <= index < len(self._nav_buttons):
             self._nav_buttons[index].setChecked(True)
 
-    def set_active_model_label(self, display_name: Optional[str]) -> None:
-        """Update the bottom status pill to show ``display_name`` or "No model loaded"."""
-        if self._status_dot is None or self._status_label is None:
+    def set_active_model_label(
+        self, display_name: Optional[str], best_val_mae: Optional[Dict[str, float]] = None
+    ) -> None:
+        """Update the bottom status pill.
+
+        With a model loaded, shows the model's name (white) on the first
+        line and its best validation MAE per output (secondary colour) on
+        the second. With no model loaded, shows a single amber
+        "No model loaded" line instead.
+        """
+        if self._status_dot is None or self._status_label is None or self._status_secondary_label is None:
             return
 
         if display_name:
@@ -251,11 +275,22 @@ class _Sidebar(QWidget):
             self._status_label.setText(elided)
             self._status_label.setToolTip(display_name)
             self._status_label.setStyleSheet(f"color: {TEXT_PRIMARY};")
+
+            mae = best_val_mae or {}
+            mae_text = (
+                f"Water \u00b1{mae.get('Water', 0.0):.2f}  "
+                f"Solids \u00b1{mae.get('Solids', 0.0):.2f}  "
+                f"Bitumen \u00b1{mae.get('Bitumen', 0.0):.2f}"
+            )
+            self._status_secondary_label.setText(mae_text)
+            self._status_secondary_label.setToolTip(mae_text)
+            self._status_secondary_label.setVisible(True)
         else:
-            self._status_dot.setStyleSheet(f"background-color: {TEXT_SECONDARY}; border-radius: 4px;")
+            self._status_dot.setStyleSheet(f"background-color: {ACCENT_COLOR}; border-radius: 4px;")
             self._status_label.setText("No model loaded")
             self._status_label.setToolTip("")
-            self._status_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
+            self._status_label.setStyleSheet(f"color: {ACCENT_COLOR}; font-weight: 600;")
+            self._status_secondary_label.setVisible(False)
 
 
 class MainWindow(QMainWindow):
@@ -328,20 +363,44 @@ class MainWindow(QMainWindow):
     def set_active_model(self, model_path: Optional[str], metadata: Optional[Dict[str, Any]] = None) -> None:
         """Set (or clear) the app-wide active model and notify sidebar + pages.
 
+        Loads ``model_path`` into a ready-to-use ``RegressionPredictor``
+        immediately (rather than leaving that to whichever page grades the
+        first image), so ``PredictPage`` and ``ModelManagerPage`` can both
+        rely on ``self.active_model`` already holding a usable predictor.
+
         Args:
             model_path: Path to the ``.pt`` checkpoint to make active, or
                 ``None`` to clear the active model.
             metadata: The model's metadata dict (as returned by
                 ``app.utils.model_io.load_model_metadata``), used to display
-                a friendly name in the sidebar status pill.
+                a friendly name/MAE summary in the sidebar status pill and
+                to build the ``RegressionPredictor`` (needs ``output_stats``).
+
+        Raises:
+            Nothing: load failures are caught, shown in a dialog, and leave
+            the previous active model (if any) unchanged.
         """
         if model_path is None:
             self.active_model = None
             self._sidebar.set_active_model_label(None)
-        else:
-            self.active_model = {"path": model_path, "metadata": metadata or {}}
-            display_name = (metadata or {}).get("name") or Path(model_path).stem
-            self._sidebar.set_active_model_label(display_name)
+            self._update_window_title()
+            self.active_model_changed.emit(self.active_model)
+            return
+
+        metadata = metadata or {}
+        try:
+            predictor = RegressionPredictor(model_path, metadata)
+        except Exception as exc:  # noqa: BLE001 - surface any load failure to the user
+            QMessageBox.critical(
+                self,
+                "Model Load Failed",
+                f"Could not load model \u201c{metadata.get('name') or Path(model_path).stem}\u201d:\n{exc}",
+            )
+            return
+
+        self.active_model = {"path": model_path, "metadata": metadata, "predictor": predictor}
+        display_name = metadata.get("name") or Path(model_path).stem
+        self._sidebar.set_active_model_label(display_name, metadata.get("best_val_mae"))
 
         self._update_window_title()
         self.active_model_changed.emit(self.active_model)

@@ -1,9 +1,11 @@
 """
-Model card component.
+Model card component (regression).
 
-Reusable card widget summarizing a single saved model: name, creation date,
-key stats (class count, best accuracy, epochs trained), and actions to load
-it as the active model, expand its full training history, or delete it.
+Reusable card widget summarizing a single saved regression model: name,
+creation date, a "Regression" type pill, epochs trained, a best-validation
+MAE summary, and actions to load it as the active model, expand its full
+training history (MAE curve, loss curve, output normalisation stats), or
+delete it.
 """
 from __future__ import annotations
 
@@ -19,11 +21,14 @@ from matplotlib.figure import Figure  # noqa: E402
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal  # noqa: E402
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
+    QAbstractItemView,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -42,7 +47,13 @@ TEXT_SECONDARY = "#8B909A"
 DANGER_COLOR = "#E5484D"
 DANGER_HOVER_BG = "rgba(229, 72, 77, 40)"
 PILL_BACKGROUND = "#2A2E36"
+REGRESSION_PILL_COLOR = "#4A7FC1"
 VAL_LINE_COLOR = "#5B9BD5"
+WATER_LINE_COLOR = "#5B9BD5"
+SOLIDS_LINE_COLOR = "#3CB878"
+BITUMEN_LINE_COLOR = "#E8A838"
+
+OUTPUT_LABELS = ("Water", "Solids", "Bitumen")
 
 
 def _build_check_icon(color: str, size: int = 14) -> QIcon:
@@ -123,7 +134,7 @@ def _build_trash_icon(color: str, size: int = 16) -> QIcon:
 
 
 class ModelCard(QFrame):
-    """Card summarizing one saved model, with load/details/delete actions.
+    """Card summarizing one saved regression model, with load/details/delete actions.
 
     ``metadata`` is a dict as returned by ``app.utils.model_io.list_saved_models``
     (i.e. the saved sidecar JSON augmented with ``model_path``/``metadata_path``
@@ -156,10 +167,11 @@ class ModelCard(QFrame):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         layout.addLayout(self._build_top_row())
         layout.addLayout(self._build_pills_row())
+        layout.addWidget(self._build_mae_summary_row())
         layout.addLayout(self._build_action_row())
 
         self._details_section = self._build_details_section()
@@ -197,28 +209,33 @@ class ModelCard(QFrame):
         row = QHBoxLayout()
         row.setSpacing(8)
 
-        grade_labels = self.metadata.get("grade_labels") or []
-        num_classes = self.metadata.get("num_classes", len(grade_labels))
-        row.addWidget(self._build_pill(f"{num_classes} classes"))
+        row.addWidget(self._build_pill("Regression", background=REGRESSION_PILL_COLOR, color="#FFFFFF"))
 
-        best_accuracy = self.metadata.get("best_val_accuracy")
-        accuracy_text = f"Accuracy: {best_accuracy * 100:.1f}%" if best_accuracy is not None else "Accuracy: \u2014"
-        row.addWidget(self._build_pill(accuracy_text))
-
-        history = self.metadata.get("training_history") or []
-        epoch_count = len(history)
+        epoch_count = self.metadata.get("final_epoch") or len(self.metadata.get("training_history") or [])
         row.addWidget(self._build_pill(f"{epoch_count} epoch{'s' if epoch_count != 1 else ''}"))
 
         row.addStretch(1)
         return row
 
-    def _build_pill(self, text: str) -> QLabel:
+    def _build_pill(self, text: str, background: str = PILL_BACKGROUND, color: str = TEXT_PRIMARY) -> QLabel:
         pill = QLabel(text)
         pill.setStyleSheet(
-            f"background-color: {PILL_BACKGROUND}; color: {TEXT_PRIMARY}; font-size: 11px;"
+            f"background-color: {background}; color: {color}; font-size: 11px; font-weight: 600;"
             f"border-radius: 8px; padding: 4px 10px;"
         )
         return pill
+
+    def _build_mae_summary_row(self) -> QLabel:
+        best_val_mae = self.metadata.get("best_val_mae") or {}
+        parts = [
+            f"Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%",
+            f"Solids \u00b1{best_val_mae.get('Solids', 0.0):.2f}%",
+            f"Bitumen \u00b1{best_val_mae.get('Bitumen', 0.0):.2f}%",
+        ]
+        label = QLabel("   ".join(parts))
+        label.setWordWrap(True)
+        label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
+        return label
 
     def _build_action_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -235,7 +252,7 @@ class ModelCard(QFrame):
         self._details_button.setIcon(_build_chevron_icon("down", TEXT_PRIMARY))
         self._details_button.setIconSize(QSize(12, 12))
         self._details_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._details_button.setToolTip("Show training history and grade labels")
+        self._details_button.setToolTip("Show MAE/loss curves and output normalisation stats")
         self._details_button.setStyleSheet(
             f"QPushButton {{ background-color: transparent; color: {TEXT_PRIMARY};"
             f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 8px 14px; font-size: 12px; }}"
@@ -274,27 +291,43 @@ class ModelCard(QFrame):
         layout.addWidget(separator)
 
         history = self.metadata.get("training_history") or []
-        layout.addWidget(self._build_history_chart(history))
-
-        grade_labels = self.metadata.get("grade_labels") or []
-        grades_text = ", ".join(grade_labels) if grade_labels else "\u2014"
-        grades_label = QLabel(f"Grade Labels: {grades_text}")
-        grades_label.setWordWrap(True)
-        grades_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
-        layout.addWidget(grades_label)
+        layout.addWidget(self._build_mae_chart(history))
+        layout.addWidget(self._build_loss_chart(history))
+        layout.addWidget(self._build_output_stats_table())
 
         return section
 
-    def _build_history_chart(self, history: List[Dict[str, Any]]) -> QWidget:
+    def _build_mae_chart(self, history: List[Dict[str, Any]]) -> QWidget:
         if not history:
-            label = QLabel("No training history available.")
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setFixedHeight(200)
-            label.setStyleSheet(
-                f"color: {TEXT_SECONDARY}; font-size: 12px; background-color: {BACKGROUND_COLOR};"
-                f"border-radius: 6px;"
-            )
-            return label
+            return self._build_no_history_placeholder()
+
+        figure = Figure(figsize=(4, 2), dpi=100)
+        figure.patch.set_facecolor(SURFACE_COLOR)
+        axes = figure.add_subplot(111)
+        axes.set_facecolor(SURFACE_COLOR)
+
+        epochs = [entry.get("epoch", index + 1) for index, entry in enumerate(history)]
+        water_maes = [entry.get("water_mae", 0.0) for entry in history]
+        solids_maes = [entry.get("solids_mae", 0.0) for entry in history]
+        bitumen_maes = [entry.get("bitumen_mae", 0.0) for entry in history]
+
+        axes.plot(epochs, water_maes, color=WATER_LINE_COLOR, linewidth=1.6, label="Water")
+        axes.plot(epochs, solids_maes, color=SOLIDS_LINE_COLOR, linewidth=1.6, label="Solids")
+        axes.plot(epochs, bitumen_maes, color=BITUMEN_LINE_COLOR, linewidth=1.6, label="Bitumen")
+        self._style_axes(axes, "MAE (%)")
+        legend = axes.legend(loc="upper right", fontsize=7, facecolor=SURFACE_COLOR, edgecolor=BORDER_COLOR)
+        for text in legend.get_texts():
+            text.set_color(TEXT_SECONDARY)
+        figure.tight_layout()
+
+        canvas = FigureCanvasQTAgg(figure)
+        canvas.setFixedHeight(200)
+        canvas.setStyleSheet("background-color: transparent;")
+        return canvas
+
+    def _build_loss_chart(self, history: List[Dict[str, Any]]) -> QWidget:
+        if not history:
+            return self._build_no_history_placeholder()
 
         figure = Figure(figsize=(4, 2), dpi=100)
         figure.patch.set_facecolor(SURFACE_COLOR)
@@ -307,12 +340,7 @@ class ModelCard(QFrame):
 
         axes.plot(epochs, train_losses, color=ACCENT_COLOR, linewidth=1.6, label="Train Loss")
         axes.plot(epochs, val_losses, color=VAL_LINE_COLOR, linewidth=1.6, label="Val Loss")
-        axes.tick_params(colors=TEXT_SECONDARY, labelsize=8)
-        for spine in axes.spines.values():
-            spine.set_color(BORDER_COLOR)
-        axes.set_xlabel("Epoch", color=TEXT_SECONDARY, fontsize=8)
-        axes.set_ylabel("Loss", color=TEXT_SECONDARY, fontsize=8)
-        axes.grid(True, color=BORDER_COLOR, linewidth=0.5, alpha=0.5)
+        self._style_axes(axes, "Loss")
         legend = axes.legend(loc="upper right", fontsize=7, facecolor=SURFACE_COLOR, edgecolor=BORDER_COLOR)
         for text in legend.get_texts():
             text.set_color(TEXT_SECONDARY)
@@ -322,6 +350,60 @@ class ModelCard(QFrame):
         canvas.setFixedHeight(200)
         canvas.setStyleSheet("background-color: transparent;")
         return canvas
+
+    @staticmethod
+    def _style_axes(axes, ylabel: str) -> None:
+        axes.tick_params(colors=TEXT_SECONDARY, labelsize=8)
+        for spine in axes.spines.values():
+            spine.set_color(BORDER_COLOR)
+        axes.set_xlabel("Epoch", color=TEXT_SECONDARY, fontsize=8)
+        axes.set_ylabel(ylabel, color=TEXT_SECONDARY, fontsize=8)
+        axes.grid(True, color=BORDER_COLOR, linewidth=0.5, alpha=0.5)
+
+    @staticmethod
+    def _build_no_history_placeholder() -> QWidget:
+        label = QLabel("No training history available.")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setFixedHeight(200)
+        label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 12px; background-color: {BACKGROUND_COLOR}; border-radius: 6px;"
+        )
+        return label
+
+    def _build_output_stats_table(self) -> QTableWidget:
+        output_stats = self.metadata.get("output_stats") or {}
+
+        table = QTableWidget(len(OUTPUT_LABELS), 3)
+        table.setHorizontalHeaderLabels(["Output", "Mean", "Std"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setFixedHeight(130)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setStyleSheet(
+            f"""
+            QTableWidget {{
+                background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
+                border: 1px solid {BORDER_COLOR}; border-radius: 6px; gridline-color: {BORDER_COLOR};
+            }}
+            QTableWidget::item {{ padding: 3px; }}
+            QHeaderView::section {{
+                background-color: {SURFACE_COLOR}; color: {TEXT_SECONDARY}; border: none;
+                padding: 5px; font-size: 10px; font-weight: 600;
+            }}
+            """
+        )
+
+        for row, label in enumerate(OUTPUT_LABELS):
+            stats = output_stats.get(label, {"mean": 0.0, "std": 0.0})
+            for col, text in enumerate((label, f"{stats.get('mean', 0.0):.2f}", f"{stats.get('std', 0.0):.2f}")):
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if col > 0:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, col, item)
+
+        return table
 
     # -- Public API ----------------------------------------------------------
 
