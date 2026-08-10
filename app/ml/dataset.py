@@ -113,7 +113,9 @@ class RegressionDataset(Dataset):
             [
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomVerticalFlip(),
-                transforms.RandomResizedCrop(224),
+                # Keep most of the sample in frame (lab photos are tightly framed);
+                # torchvision default scale (0.08, 1.0) can crop away the specimen.
+                transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=self.IMAGENET_MEAN, std=self.IMAGENET_STD),

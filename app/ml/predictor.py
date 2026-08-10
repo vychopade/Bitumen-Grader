@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 class RegressionPredictor:
     """Loads a trained ``BitumenRegressor`` checkpoint and runs inference on images.
 
-    Outputs are denormalised back into original percentage units (Water,
-    Solids, Bitumen) using the ``output_stats`` recorded in the model's
-    metadata at training time.
+    When the checkpoint was trained with target z-scoring, outputs are mapped
+    back to percentage units using ``output_stats`` from the metadata sidecar.
+    Otherwise the network's raw outputs are treated as percentages already.
     """
 
     OUTPUT_NAMES = ["Water", "Solids", "Bitumen"]
@@ -25,6 +25,7 @@ class RegressionPredictor:
         self.model = BitumenRegressor.from_pretrained(model_path, device)
 
         self.output_stats = metadata["output_stats"]
+        self.normalise_targets = bool(metadata.get("normalise_targets", True))
         self.output_names = list(self.OUTPUT_NAMES)
         self.model.eval()
 
@@ -37,12 +38,18 @@ class RegressionPredictor:
             ]
         )
 
-    def _denormalise(self, raw_outputs) -> list:
-        """Map (3,) raw model outputs back to clamped [0, 100] original-unit floats."""
+    def _to_percentages(self, raw_outputs) -> list:
+        """Map (3,) raw model outputs to clamped [0, 100] percentage floats.
+
+        When training used target z-scoring, invert with ``output_stats``.
+        Otherwise the network already predicts in original percentage units.
+        """
         values = []
         for index, name in enumerate(self.output_names):
-            stats = self.output_stats[name]
-            value = raw_outputs[index].item() * stats["std"] + stats["mean"]
+            value = raw_outputs[index].item()
+            if self.normalise_targets:
+                stats = self.output_stats[name]
+                value = value * stats["std"] + stats["mean"]
             value = max(0.0, min(100.0, value))
             values.append(float(value))
         return values
@@ -55,7 +62,7 @@ class RegressionPredictor:
         with torch.no_grad():
             raw_outputs = self.model(tensor)[0]
 
-        water, solids, bitumen = self._denormalise(raw_outputs)
+        water, solids, bitumen = self._to_percentages(raw_outputs)
         total_sum = water + solids + bitumen
         sum_deviation = abs(total_sum - 100.0)
 

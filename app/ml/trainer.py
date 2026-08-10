@@ -16,6 +16,7 @@ class RegressionTrainingResult:
     stopped_early: bool
     training_history: list  # list of per-epoch dicts
     output_stats: dict  # from dataset.get_output_stats()
+    normalise_targets: bool
 
 
 class RegressionTrainer(QObject):
@@ -156,8 +157,13 @@ class RegressionTrainer(QObject):
                 val_loss = running_val_loss / val_batches if val_batches else 0.0
 
                 if all_preds:
-                    preds = self._denormalise_batch(torch.cat(all_preds, dim=0))
-                    truths = self._denormalise_batch(torch.cat(all_targets, dim=0))
+                    preds = torch.cat(all_preds, dim=0)
+                    truths = torch.cat(all_targets, dim=0)
+                    # Targets are only z-scored when normalise_targets is on;
+                    # denormalise solely in that case so MAE stays in % units.
+                    if self.normalise_targets:
+                        preds = self._denormalise_batch(preds)
+                        truths = self._denormalise_batch(truths)
                 else:
                     preds = torch.zeros((0, 3))
                     truths = torch.zeros((0, 3))
@@ -217,6 +223,7 @@ class RegressionTrainer(QObject):
                 stopped_early=stopped_early,
                 training_history=training_history,
                 output_stats=self.output_stats,
+                normalise_targets=self.normalise_targets,
             )
             self.finished.emit(result)
 

@@ -162,9 +162,11 @@ class _ThumbnailWorker(QObject):
 
 
 class _DropZone(QFrame):
-    """Dashed drag-and-drop target that also offers a "Browse Files" button."""
+    """Dashed drag-and-drop target with Browse Files / Browse Folder buttons."""
 
     files_selected = pyqtSignal(list)
+    #: Emitted when the user picks a folder that contains no supported images.
+    folder_empty = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -180,26 +182,51 @@ class _DropZone(QFrame):
         layout.setSpacing(8)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("Drag & drop images here")
+        title = QLabel("Drag & drop images or a folder here")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600; background: transparent;")
         layout.addWidget(title)
 
-        subtitle = QLabel("Supports JPG, PNG, and TIF \u2014 you can select multiple files at once.")
+        subtitle = QLabel("Supports JPG, PNG, and TIF \u2014 pick files or an entire folder.")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         layout.addWidget(subtitle)
 
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+        button_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self.browse_button = QPushButton("Browse Files")
         self.browse_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.browse_button.setFixedWidth(140)
-        self.browse_button.setStyleSheet(
+        self.browse_button.setStyleSheet(self._primary_button_style())
+        self.browse_button.clicked.connect(self._browse_files)
+        button_row.addWidget(self.browse_button)
+
+        self.browse_folder_button = QPushButton("Browse Folder")
+        self.browse_folder_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.browse_folder_button.setFixedWidth(140)
+        self.browse_folder_button.setStyleSheet(self._secondary_button_style())
+        self.browse_folder_button.clicked.connect(self._browse_folder)
+        button_row.addWidget(self.browse_folder_button)
+
+        layout.addLayout(button_row)
+
+    @staticmethod
+    def _primary_button_style() -> str:
+        return (
             f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 600;"
             f"border: none; border-radius: 6px; padding: 8px 16px; }}"
             f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
         )
-        self.browse_button.clicked.connect(self._browse_files)
-        layout.addWidget(self.browse_button, 0, Qt.AlignmentFlag.AlignHCenter)
+
+    @staticmethod
+    def _secondary_button_style() -> str:
+        return (
+            f"QPushButton {{ background-color: transparent; color: {ACCENT_COLOR}; font-weight: 600;"
+            f"border: 1px solid {ACCENT_COLOR}; border-radius: 6px; padding: 8px 16px; }}"
+            f"QPushButton:hover {{ background-color: rgba(232, 168, 56, 30); }}"
+        )
 
     def _apply_style(self, active: bool) -> None:
         border_color = ACCENT_HOVER_COLOR if active else ACCENT_COLOR
@@ -215,15 +242,71 @@ class _DropZone(QFrame):
         if paths:
             self.files_selected.emit(paths)
 
+    def _browse_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
+        if not folder:
+            return
+        paths = self._collect_images_from_folder(folder)
+        if paths:
+            self.files_selected.emit(paths)
+        else:
+            self.folder_empty.emit(folder)
+
+    @classmethod
+    def _collect_images_from_folder(cls, folder: str) -> List[str]:
+        """Return supported image paths in ``folder`` (top-level only, sorted)."""
+        directory = Path(folder)
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            return []
+        paths = [
+            str(entry)
+            for entry in entries
+            if entry.is_file() and cls._is_supported(str(entry))
+        ]
+        paths.sort()
+        return paths
+
     @staticmethod
     def _is_supported(path: str) -> bool:
         return path.lower().endswith(SUPPORTED_EXTENSIONS)
 
+    def _paths_from_urls(self, urls) -> List[str]:
+        """Resolve dropped file/folder URLs into supported image paths."""
+        paths: List[str] = []
+        seen: set[str] = set()
+        for url in urls:
+            if not url.isLocalFile():
+                continue
+            local_path = url.toLocalFile()
+            candidate = Path(local_path)
+            if candidate.is_dir():
+                for image_path in self._collect_images_from_folder(local_path):
+                    if image_path not in seen:
+                        paths.append(image_path)
+                        seen.add(image_path)
+            elif self._is_supported(local_path) and local_path not in seen:
+                paths.append(local_path)
+                seen.add(local_path)
+        return paths
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         mime_data = event.mimeData()
-        if mime_data.hasUrls() and any(
-            url.isLocalFile() and self._is_supported(url.toLocalFile()) for url in mime_data.urls()
-        ):
+        if not mime_data.hasUrls():
+            event.ignore()
+            return
+
+        acceptable = False
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            local_path = url.toLocalFile()
+            if Path(local_path).is_dir() or self._is_supported(local_path):
+                acceptable = True
+                break
+
+        if acceptable:
             event.acceptProposedAction()
             self._apply_style(active=True)
         else:
@@ -234,11 +317,7 @@ class _DropZone(QFrame):
 
     def dropEvent(self, event: QDropEvent) -> None:
         self._apply_style(active=False)
-        paths = [
-            url.toLocalFile()
-            for url in event.mimeData().urls()
-            if url.isLocalFile() and self._is_supported(url.toLocalFile())
-        ]
+        paths = self._paths_from_urls(event.mimeData().urls())
         if paths:
             self.files_selected.emit(paths)
             event.acceptProposedAction()
@@ -414,8 +493,11 @@ class ImageImportPage(QWidget):
 
         self._drop_zone = _DropZone()
         self._drop_zone.files_selected.connect(self._add_images)
+        self._drop_zone.folder_empty.connect(self._on_folder_empty)
         self._drop_zone.browse_button.setToolTip(shortcut_tooltip("Browse for image files", "B"))
+        self._drop_zone.browse_folder_button.setToolTip(shortcut_tooltip("Browse for an image folder", "F"))
         self._shortcut_bindings.append((self._drop_zone.browse_button, "B"))
+        self._shortcut_bindings.append((self._drop_zone.browse_folder_button, "F"))
         left_column.addWidget(self._drop_zone)
 
         left_column.addWidget(self._build_thumbnail_strip())
@@ -431,6 +513,7 @@ class ImageImportPage(QWidget):
         """Chain focus order: drop zone, then editor controls, then send actions."""
         chain = [
             self._drop_zone.browse_button,
+            self._drop_zone.browse_folder_button,
             self._editor.crop_button,
             self._editor.flip_h_button,
             self._editor.flip_v_button,
@@ -638,6 +721,11 @@ class ImageImportPage(QWidget):
         self._refresh_action_bar()
         self._update_dataset_warning()
 
+    def _on_folder_empty(self, folder: str) -> None:
+        self._show_feedback(
+            f"No JPG/PNG/TIF images found in \u201c{Path(folder).name}\u201d.",
+            danger=True,
+        )
     def _on_load_more_clicked(self) -> None:
         self._load_next_batch()
 

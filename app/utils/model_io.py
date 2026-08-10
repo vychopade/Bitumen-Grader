@@ -85,7 +85,7 @@ def save_model(
         "best_val_mae": result.best_val_mae,
         "final_epoch": result.final_epoch,
         "stopped_early": result.stopped_early,
-        "normalise_targets": getattr(result, "normalise_targets", True),
+        "normalise_targets": result.normalise_targets,
         "training_history": result.training_history,
     }
 

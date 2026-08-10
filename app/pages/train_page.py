@@ -1253,11 +1253,7 @@ class TrainPage(QWidget):
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs)
 
-        # BitumenRegressor always initialises from ImageNet-pretrained ResNet-18
-        # weights; the "Use Pretrained Backbone" checkbox is kept for user
-        # visibility/consistency with the rest of the form, but the model
-        # class itself has no non-pretrained code path to toggle.
-        model = BitumenRegressor()
+        model = BitumenRegressor(pretrained=self._pretrained_checkbox.isChecked())
 
         trainer = RegressionTrainer(
             model=model,

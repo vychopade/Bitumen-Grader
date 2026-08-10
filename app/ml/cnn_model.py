@@ -4,9 +4,10 @@ from torchvision import models
 
 
 class BitumenRegressor(nn.Module):
-    def __init__(self):
+    def __init__(self, pretrained: bool = True):
         super().__init__()
-        self.backbone = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        weights = models.ResNet18_Weights.DEFAULT if pretrained else None
+        self.backbone = models.resnet18(weights=weights)
         in_features = self.backbone.fc.in_features
         self.backbone.fc = nn.Linear(in_features, 3)
 
@@ -19,7 +20,8 @@ class BitumenRegressor(nn.Module):
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        model = cls()
+        # Skip ImageNet download — checkpoint weights replace the backbone entirely.
+        model = cls(pretrained=False)
         state_dict = torch.load(path, map_location=device)
         model.load_state_dict(state_dict)
         model.to(device)
