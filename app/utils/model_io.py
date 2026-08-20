@@ -1,25 +1,17 @@
-"""
-Model save/load utilities.
-
-Handles persisting trained regression models (``BitumenRegressor`` weights as
-``.pt`` files) to the ``models/`` directory alongside a metadata JSON sidecar
-(output stats, training history, validation metrics), and loading them back
-as ready-to-use ``RegressionPredictor`` instances for the Model Manager and
-Grade pages.
-"""
+"""Save/load trained models and their metadata JSON."""
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, TYPE_CHECKING, Union
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
 import torch.nn as nn
 
+from app.constants import OUTPUT_NAMES
+
 if TYPE_CHECKING:
     from app.ml.predictor import RegressionPredictor
-
-OUTPUT_NAMES = ["Water", "Solids", "Bitumen"]
 
 
 def save_model(
@@ -28,36 +20,11 @@ def save_model(
     output_stats: Dict[str, Dict[str, float]],
     result: Any,
     save_dir: Union[str, Path],
+    extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Path]:
-    """Save a trained regression model's weights and metadata to ``save_dir``.
+    """Write ``{name}_{timestamp}.pt`` and a matching ``.json`` into ``save_dir``.
 
-    Writes two timestamped files into ``save_dir`` so repeated training runs
-    of the same model name never collide:
-        - ``{name}_{YYYYMMDD_HHMM}.pt``: the model's raw ``state_dict``,
-          loadable via ``BitumenRegressor.from_pretrained``.
-        - ``{name}_{YYYYMMDD_HHMM}.json``: sidecar metadata describing the
-          output normalisation stats and training outcome.
-
-    Args:
-        model: The trained ``BitumenRegressor`` whose weights should be saved.
-        name: Base filename, without extension or timestamp.
-        output_stats: Per-output normalisation stats, e.g.
-            ``{"Water": {"mean": x, "std": x}, "Solids": {...}, "Bitumen": {...}}``
-            (typically from ``RegressionDataset.get_output_stats()``).
-        result: The ``RegressionTrainingResult`` returned by
-            ``RegressionTrainer`` once training finishes. Must expose
-            ``best_val_loss``, ``best_val_mae``, ``final_epoch``,
-            ``stopped_early``, and ``training_history``.
-        save_dir: Directory to write the ``.pt``/``.json`` files into. It is
-            created if it does not already exist.
-
-    Returns:
-        A dict with keys ``"model_path"`` and ``"metadata_path"`` pointing
-        to the files that were written.
-
-    Raises:
-        OSError: If ``save_dir`` cannot be created, or either file cannot be
-            written, with a descriptive message.
+    Returns ``{"model_path": ..., "metadata_path": ...}``.
     """
     try:
         save_dir = Path(save_dir)
@@ -83,11 +50,21 @@ def save_model(
         "num_outputs": len(OUTPUT_NAMES),
         "best_val_loss": result.best_val_loss,
         "best_val_mae": result.best_val_mae,
+        "best_val_r2": getattr(result, "best_val_r2", None),
+        "test_loss": result.test_loss,
+        "test_mae": result.test_mae,
+        "test_r2": getattr(result, "test_r2", None),
+        "test_sum_deviation": result.test_sum_deviation,
         "final_epoch": result.final_epoch,
         "stopped_early": result.stopped_early,
         "normalise_targets": result.normalise_targets,
         "training_history": result.training_history,
     }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    if hasattr(model, "config_dict"):
+        for key, value in model.config_dict().items():
+            metadata.setdefault(key, value)
 
     try:
         with open(metadata_path, "w", encoding="utf-8") as f:
@@ -99,19 +76,7 @@ def save_model(
 
 
 def load_model_metadata(json_path: Union[str, Path]) -> Dict[str, Any]:
-    """Load a saved model's sidecar metadata JSON file.
-
-    Args:
-        json_path: Path to the ``.json`` metadata file written by
-            ``save_model``.
-
-    Returns:
-        The parsed metadata dict.
-
-    Raises:
-        OSError: If the file cannot be read, with a descriptive message.
-        ValueError: If the file does not contain valid JSON.
-    """
+    """Read the metadata ``.json`` next to a saved model."""
     json_path = Path(json_path)
     try:
         with open(json_path, "r", encoding="utf-8") as f:
@@ -123,27 +88,8 @@ def load_model_metadata(json_path: Union[str, Path]) -> Dict[str, Any]:
 
 
 def load_model(json_path: Union[str, Path]) -> RegressionPredictor:
-    """Load a saved regression model as a ready-to-use ``RegressionPredictor``.
-
-    Reads the metadata JSON at ``json_path``, locates the sibling ``.pt``
-    weights file (same stem, ``.pt`` extension), and instantiates a
-    ``RegressionPredictor`` from both.
-
-    Args:
-        json_path: Path to the ``.json`` metadata file written by
-            ``save_model``.
-
-    Returns:
-        A ``RegressionPredictor`` ready to call ``.predict()`` on.
-
-    Raises:
-        OSError: If the metadata file cannot be read.
-        ValueError: If the metadata file is not valid JSON.
-        FileNotFoundError: If the corresponding ``.pt`` weights file is missing.
-        RuntimeError: If the model weights fail to load.
-    """
-    # Imported locally to avoid a hard import-time dependency between
-    # app.utils (I/O helpers) and app.ml (torch-heavy model code).
+    """Load metadata + sibling ``.pt`` and return a RegressionPredictor."""
+    # Local import so app.utils doesn't hard-depend on torch-heavy app.ml.
     from app.ml.predictor import RegressionPredictor
 
     json_path = Path(json_path)
@@ -162,22 +108,7 @@ def load_model(json_path: Union[str, Path]) -> RegressionPredictor:
 
 
 def list_saved_models(save_dir: Union[str, Path]) -> List[Dict[str, Any]]:
-    """List metadata for every saved regression model in ``save_dir``, newest first.
-
-    Args:
-        save_dir: Directory to scan for ``.json`` metadata files.
-
-    Returns:
-        A list of metadata dicts (see ``load_model_metadata``), each
-        augmented with ``"model_path"`` and ``"metadata_path"`` string keys
-        pointing to the corresponding files. Sorted by ``created_at``
-        descending (newest first). Returns an empty list if ``save_dir``
-        does not exist, or if it contains no valid metadata files.
-
-    Raises:
-        OSError: If ``save_dir`` exists but cannot be scanned, with a
-            descriptive message.
-    """
+    """Scan ``save_dir`` for model metadata; newest first. Empty if missing."""
     save_dir = Path(save_dir)
     if not save_dir.exists():
         return []

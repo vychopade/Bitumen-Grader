@@ -1,55 +1,37 @@
-"""
-Entry point for the BitumenGrader desktop application.
-
-Responsible for bootstrapping the PyQt6 QApplication, applying any global
-application settings (styling, icons, high-DPI policy, etc.), instantiating
-the MainWindow, and starting the Qt event loop. Also installs a global
-exception hook so unhandled errors surface as a dialog instead of silently
-crashing the app.
-"""
+"""Start the BitumenGrader PyQt6 app."""
 from __future__ import annotations
 
 import sys
 import traceback
-from pathlib import Path
 from types import TracebackType
 from typing import Optional, Type
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from app.paths import ASSETS_DIR, MODELS_DIR
+
 APP_NAME = "BitumenGrader"
 APP_VERSION = "1.0.0"
 ORGANIZATION_NAME = "BitumenGrader"
 ORGANIZATION_DOMAIN = "bitumengrader.local"
 
-_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-_STYLESHEET_PATH = _ASSETS_DIR / "style.qss"
-_MODELS_DIR = Path(__file__).resolve().parent / "models"
+_STYLESHEET_PATH = ASSETS_DIR / "style.qss"
 
 
 def _ensure_models_directory() -> None:
-    """Create the top-level models/ directory on first launch if missing.
-
-    The Model Library, Train, and Predict pages all expect this directory to
-    exist once the window is up (e.g. to scan it for saved models); creating
-    it here means a fresh checkout works immediately instead of only after
-    the first model is trained.
-    """
+    """Make sure models/ exists so a fresh checkout can run."""
     try:
-        _MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
 
 
 def _load_stylesheet() -> str:
-    """Read assets/style.qss, substituting the {ASSETS_DIR} asset-path token.
+    """Load style.qss and fill in {ASSETS_DIR} for absolute asset urls.
 
-    Absolute paths are used for asset url()s referenced from the stylesheet
-    (e.g. the checkbox checkmark glyph) because Qt resolves relative url()s
-    in an application-wide style sheet against the process's current working
-    directory, not the .qss file's location -- an absolute path keeps this
-    working regardless of where the app is launched from.
+    Qt resolves relative url()s against the cwd, not the .qss file, so we
+    use absolute paths so it works no matter where you launch from.
     """
     if not _STYLESHEET_PATH.exists():
         return ""
@@ -57,16 +39,14 @@ def _load_stylesheet() -> str:
         text = _STYLESHEET_PATH.read_text(encoding="utf-8")
     except OSError:
         return ""
-    return text.replace("{ASSETS_DIR}", _ASSETS_DIR.as_posix())
+    return text.replace("{ASSETS_DIR}", ASSETS_DIR.as_posix())
 
 
 def _install_exception_hook(app: QApplication) -> None:
-    """Route unhandled exceptions to a QMessageBox instead of a hard crash.
+    """Show unhandled errors in a dialog instead of silently dying.
 
-    Keeps the previous excepthook so KeyboardInterrupt/SystemExit and any
-    outer tooling still see the exception after the user dismisses the
-    dialog (the app continues running rather than force-exiting, since a
-    single unexpected error in one page shouldn't take down the whole tool).
+    Still calls the previous hook afterward. App keeps running so one bad
+    page error doesn't kill the whole tool.
     """
     previous_hook = sys.excepthook
 
@@ -91,7 +71,7 @@ def _install_exception_hook(app: QApplication) -> None:
             box.setDetailedText(details)
             box.setStandardButtons(QMessageBox.StandardButton.Ok)
             box.exec()
-        except Exception:  # noqa: BLE001 - never let the error handler itself crash the app
+        except Exception:  # noqa: BLE001 - don't let the error handler crash too
             pass
 
     sys.excepthook = _handle_exception
@@ -117,8 +97,7 @@ def main() -> int:
     _install_exception_hook(app)
     _ensure_models_directory()
 
-    # Imported after high-DPI attributes are set and before any QWidget is
-    # constructed, per Qt's recommended startup order.
+    # Import after high-DPI attrs, before any QWidget (Qt startup order).
     from app.main_window import MainWindow
 
     window = MainWindow()

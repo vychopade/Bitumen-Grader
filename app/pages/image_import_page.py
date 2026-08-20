@@ -1,15 +1,9 @@
 """
-Image Import page.
+Import Images page.
 
-Provides the UI for uploading bitumen sample images into the application,
-organizing them, and launching the image editor for cropping, flipping,
-and rotating images before they are used for training or prediction.
-
-To stay responsive with very large imports, thumbnails are generated on a
-background QThread and revealed in paginated batches (see ``_ThumbnailWorker``
-and ``BATCH_SIZE``) rather than decoding every image up front on the GUI
-thread. Only the currently-selected image is ever fully decoded and held in
-memory; everything else is tracked by file path and (re-)opened on demand.
+Add sample photos, edit them (crop/flip/rotate), then send paths to
+training or grading. Thumbnails load in batches on a background thread
+so big imports don't freeze the UI.
 """
 from __future__ import annotations
 
@@ -46,47 +40,43 @@ from PyQt6.QtWidgets import (
 )
 
 from app.components.image_editor import ImageEditor, pil_to_qimage
+from app.constants import IMAGE_EXTENSIONS
+from app.theme import (
+    ACCENT_COLOR,
+    ACCENT_TINT_HOVER,
+    BORDER_COLOR,
+    DANGER_COLOR,
+    PAGE_MARGINS,
+    PAGE_SPACING,
+    SURFACE_COLOR,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    accent_button_qss,
+    drop_zone_qss,
+    ghost_button_qss,
+)
 from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
 
 if TYPE_CHECKING:
     from app.main_window import MainWindow
 
-# --------------------------------------------------------------------------
-# Design tokens (kept local so this page has no dependency on MainWindow)
-# --------------------------------------------------------------------------
-
-SURFACE_COLOR = "#22252C"
-ACCENT_COLOR = "#E8A838"
-ACCENT_HOVER_COLOR = "#C98A20"
-TEXT_PRIMARY = "#E8E9EC"
-TEXT_SECONDARY = "#8B909A"
-BUTTON_COLOR = "#2A2E36"
-DANGER_COLOR = "#E5484D"
-BORDER_COLOR = "#33373F"
-
 THUMBNAIL_SIZE = 120
 RIGHT_PANEL_WIDTH = 300
-SUPPORTED_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif")
+SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS
 
-#: How many thumbnails are materialized (widget + background decode) at a
-#: time. The remainder wait behind the "Load More" button so importing
-#: thousands of files never blocks the UI or creates thousands of widgets
-#: up front.
+#: Thumbnails built per batch. The rest wait behind "Load More" so huge
+#: imports don't create thousands of widgets at once.
 BATCH_SIZE = 100
 
-#: Above this many images (loaded + still pending), show a one-line notice
-#: that thumbnails are being paginated rather than all-at-once.
+#: Above this many images, show a one-line "large dataset" notice.
 LARGE_DATASET_THRESHOLD = 2000
 
-#: Where non-destructively edited images are written to disk so that
-#: everything downstream (thumbnails, training, grading) can keep treating
-#: "path on disk" as the single source of truth instead of holding decoded
-#: pixel buffers in memory. See ``ImageImportPage._persist_edited_image``.
+#: Temp folder for edited images so everything still works from a path on disk.
 _EDIT_CACHE_DIR = Path(gettempdir()) / "bitumengrader_edited_images"
 
 
 def _build_close_icon(color: str, size: int = 12) -> QIcon:
-    """Draw a small "x" glyph with QPainter (avoids relying on font glyph coverage)."""
+    """Small × icon drawn with QPainter."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
 
@@ -107,13 +97,10 @@ def _build_close_icon(color: str, size: int = 12) -> QIcon:
 
 @dataclass
 class _LoadedImage:
-    """A single imported image and the thumbnail widget representing it.
+    """One imported image and its thumbnail widget.
 
-    ``image`` is ``None`` unless this is the currently-selected item: the
-    full-resolution decoded copy is only materialized on selection (for the
-    editor) and evicted again as soon as another image is selected, so
-    memory use stays roughly constant regardless of how many images are
-    loaded overall.
+    ``image`` is only set for the selected item (for the editor); everything
+    else is just a path, so RAM stays roughly flat no matter how many you load.
     """
 
     id: int
@@ -123,11 +110,9 @@ class _LoadedImage:
 
 
 class _ThumbnailWorker(QObject):
-    """Opens and resizes a batch of images to thumbnail-sized QImages off the GUI thread.
+    """Open and shrink images to thumbnail QImages off the GUI thread.
 
-    ``QImage`` (unlike ``QPixmap``) has no dependency on the GUI thread or a
-    platform paint engine, so it is safe to construct here and hand back to
-    the main thread for the final ``QPixmap`` conversion.
+    ``QImage`` is safe to build here; convert to ``QPixmap`` on the main thread.
     """
 
     thumbnail_ready = pyqtSignal(int, QImage)
@@ -162,10 +147,10 @@ class _ThumbnailWorker(QObject):
 
 
 class _DropZone(QFrame):
-    """Dashed drag-and-drop target with Browse Files / Browse Folder buttons."""
+    """Dashed drop area with Browse Files / Browse Folder."""
 
     files_selected = pyqtSignal(list)
-    #: Emitted when the user picks a folder that contains no supported images.
+    #: Fired when a picked folder has no supported images.
     folder_empty = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -182,12 +167,12 @@ class _DropZone(QFrame):
         layout.setSpacing(8)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("Drag & drop images or a folder here")
+        title = QLabel("Drop images or a folder here")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600; background: transparent;")
         layout.addWidget(title)
 
-        subtitle = QLabel("Supports JPG, PNG, and TIF \u2014 pick files or an entire folder.")
+        subtitle = QLabel("JPG, PNG, or TIF \u2014 files or a whole folder.")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         layout.addWidget(subtitle)
@@ -199,42 +184,21 @@ class _DropZone(QFrame):
         self.browse_button = QPushButton("Browse Files")
         self.browse_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.browse_button.setFixedWidth(140)
-        self.browse_button.setStyleSheet(self._primary_button_style())
+        self.browse_button.setStyleSheet(accent_button_qss())
         self.browse_button.clicked.connect(self._browse_files)
         button_row.addWidget(self.browse_button)
 
         self.browse_folder_button = QPushButton("Browse Folder")
         self.browse_folder_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.browse_folder_button.setFixedWidth(140)
-        self.browse_folder_button.setStyleSheet(self._secondary_button_style())
+        self.browse_folder_button.setStyleSheet(ghost_button_qss())
         self.browse_folder_button.clicked.connect(self._browse_folder)
         button_row.addWidget(self.browse_folder_button)
 
         layout.addLayout(button_row)
 
-    @staticmethod
-    def _primary_button_style() -> str:
-        return (
-            f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 600;"
-            f"border: none; border-radius: 6px; padding: 8px 16px; }}"
-            f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
-        )
-
-    @staticmethod
-    def _secondary_button_style() -> str:
-        return (
-            f"QPushButton {{ background-color: transparent; color: {ACCENT_COLOR}; font-weight: 600;"
-            f"border: 1px solid {ACCENT_COLOR}; border-radius: 6px; padding: 8px 16px; }}"
-            f"QPushButton:hover {{ background-color: rgba(232, 168, 56, 30); }}"
-        )
-
     def _apply_style(self, active: bool) -> None:
-        border_color = ACCENT_HOVER_COLOR if active else ACCENT_COLOR
-        background = "#2A2E36" if active else SURFACE_COLOR
-        self.setStyleSheet(
-            f"QFrame#dropZone {{ background-color: {background}; border: 2px dashed {border_color};"
-            f"border-radius: 8px; }}"
-        )
+        self.setStyleSheet(drop_zone_qss("dropZone", active=active))
 
     def _browse_files(self) -> None:
         file_filter = "Images (*.jpg *.jpeg *.png *.tif)"
@@ -254,7 +218,7 @@ class _DropZone(QFrame):
 
     @classmethod
     def _collect_images_from_folder(cls, folder: str) -> List[str]:
-        """Return supported image paths in ``folder`` (top-level only, sorted)."""
+        """Supported image paths in ``folder`` (top level only, sorted)."""
         directory = Path(folder)
         try:
             entries = list(directory.iterdir())
@@ -273,7 +237,7 @@ class _DropZone(QFrame):
         return path.lower().endswith(SUPPORTED_EXTENSIONS)
 
     def _paths_from_urls(self, urls) -> List[str]:
-        """Resolve dropped file/folder URLs into supported image paths."""
+        """Turn dropped file/folder URLs into supported image paths."""
         paths: List[str] = []
         seen: set[str] = set()
         for url in urls:
@@ -326,11 +290,10 @@ class _DropZone(QFrame):
 
 
 class _Thumbnail(QWidget):
-    """A single 120x120 image thumbnail with a filename label and a remove (\u00d7) button.
+    """120×120 thumbnail with filename and a remove (×) button.
 
-    Constructed with just a filename; the actual pixel content arrives later
-    via ``set_thumbnail_from_qimage`` (from the background thumbnail worker)
-    or ``set_error`` if that image could not be decoded.
+    Built with just a name; pixels arrive later via ``set_thumbnail_from_qimage``
+    or ``set_error`` if decode fails.
     """
 
     clicked = pyqtSignal(int)
@@ -426,23 +389,12 @@ class _Thumbnail(QWidget):
 
 
 class ImageImportPage(QWidget):
-    """Page for importing bitumen sample images and editing them before use.
+    """Import sample photos and edit them before training or grading.
 
-    Images are tracked by file path; only the selected image (for the
-    ``ImageEditor``) is ever fully decoded into memory. Thumbnails are
-    generated progressively in batches of ``BATCH_SIZE`` on a background
-    QThread, with a "Load More" control revealing further batches, so
-    importing very large datasets never freezes the UI.
-
-    "Send to Training" / "Send to Grading" hand the full set of imported
-    paths off to the rest of the app: they store the payload on
-    ``main_window.training_images`` / ``main_window.grading_images`` (read by
-    those pages) and also emit local Qt signals for any listener that wants
-    to react directly.
+    Tracked by path; only the selected image is fully decoded. Thumbnails
+    load in ``BATCH_SIZE`` batches. "Send to Training" / "Send to Grading"
+    store path lists on ``main_window`` and switch to that page.
     """
-
-    images_sent_to_training = pyqtSignal(list)
-    images_sent_to_grading = pyqtSignal(list)
 
     def __init__(self, main_window: Optional["MainWindow"] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -477,8 +429,8 @@ class ImageImportPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(32, 28, 32, 24)
-        root.setSpacing(18)
+        root.setContentsMargins(*PAGE_MARGINS)
+        root.setSpacing(PAGE_SPACING)
 
         root.addLayout(self._build_header())
 
@@ -510,7 +462,7 @@ class ImageImportPage(QWidget):
         root.addLayout(self._build_action_bar())
 
     def _apply_tab_order(self) -> None:
-        """Chain focus order: drop zone, then editor controls, then send actions."""
+        """Focus order: drop zone → editor → send buttons."""
         chain = [
             self._drop_zone.browse_button,
             self._drop_zone.browse_folder_button,
@@ -532,9 +484,7 @@ class ImageImportPage(QWidget):
         super().showEvent(event)
         bind_page_shortcuts(self._shortcut_bindings)
         if not self._tab_order_applied:
-            # Deferred until the page is actually parented under the main
-            # window (setTabOrder requires both widgets to share a window,
-            # which isn't yet true during __init__/_build_ui).
+            # Deferred until we're under the main window (setTabOrder needs a shared window).
             self._apply_tab_order()
             self._tab_order_applied = True
 
@@ -550,7 +500,7 @@ class ImageImportPage(QWidget):
         title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 20px; font-weight: 600;")
         header.addWidget(title)
 
-        subtitle = QLabel("Upload and prepare your bitumen samples before training or grading.")
+        subtitle = QLabel("Add photos, then edit them before training or grading.")
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
         header.addWidget(subtitle)
 
@@ -563,13 +513,13 @@ class ImageImportPage(QWidget):
             # Scoped to #datasetWarningBanner -- QLabel is a QFrame subclass
             # in Qt, so a bare "QFrame" selector would also draw this border
             # around the nested label, not just the banner.
-            f"QFrame#datasetWarningBanner {{ background-color: rgba(232, 168, 56, 30); border: 1px solid {ACCENT_COLOR};"
+            f"QFrame#datasetWarningBanner {{ background-color: {ACCENT_TINT_HOVER}; border: 1px solid {ACCENT_COLOR};"
             f"border-radius: 8px; }}"
         )
         layout = QHBoxLayout(banner)
         layout.setContentsMargins(14, 10, 14, 10)
 
-        label = QLabel("Large dataset detected \u2014 thumbnails will load progressively.")
+        label = QLabel("Large dataset \u2014 thumbnails load in batches.")
         label.setStyleSheet(f"color: {ACCENT_COLOR}; font-size: 12px; font-weight: 600; background: transparent;")
         layout.addWidget(label)
 
@@ -591,7 +541,7 @@ class ImageImportPage(QWidget):
         self._thumbnail_row.setContentsMargins(4, 4, 4, 4)
         self._thumbnail_row.setSpacing(14)
 
-        self._empty_strip_label = QLabel("No images loaded yet \u2014 add some above.")
+        self._empty_strip_label = QLabel("No images yet \u2014 add some above.")
         self._empty_strip_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;")
         self._thumbnail_row.addWidget(self._empty_strip_label)
 
@@ -601,7 +551,7 @@ class ImageImportPage(QWidget):
         self._load_more_button.setStyleSheet(
             f"QPushButton {{ background-color: {SURFACE_COLOR}; color: {ACCENT_COLOR}; font-weight: 600;"
             f"font-size: 11px; border: 2px dashed {ACCENT_COLOR}; border-radius: 6px; }}"
-            f"QPushButton:hover {{ background-color: rgba(232, 168, 56, 30); }}"
+            f"QPushButton:hover {{ background-color: {ACCENT_TINT_HOVER}; }}"
             f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 2px dashed {BORDER_COLOR}; }}"
         )
         self._load_more_button.clicked.connect(self._on_load_more_clicked)
@@ -627,7 +577,7 @@ class ImageImportPage(QWidget):
         title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 14px; font-weight: 600; background: transparent;")
         layout.addWidget(title)
 
-        self._editor_placeholder = QLabel("Select a thumbnail to edit it here.")
+        self._editor_placeholder = QLabel("Select a thumbnail to edit.")
         self._editor_placeholder.setWordWrap(True)
         self._editor_placeholder.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;"
@@ -645,7 +595,7 @@ class ImageImportPage(QWidget):
             (self._editor.flip_v_button, "V", "Flip Vertical"),
             (self._editor.rotate_cw_button, "W", "Rotate 90\u00b0 CW"),
             (self._editor.rotate_ccw_button, "Q", "Rotate 90\u00b0 CCW"),
-            (self._editor.reset_button, "O", "Reset to the original image"),
+            (self._editor.reset_button, "O", "Reset to original"),
             (self._editor.apply_button, "P", "Apply Changes"),
         )
         for button, letter, description in editor_shortcuts:
@@ -661,26 +611,16 @@ class ImageImportPage(QWidget):
 
         self._send_training_button = QPushButton("Send to Training")
         self._send_training_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._send_training_button.setStyleSheet(
-            f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 600;"
-            f"border: none; border-radius: 6px; padding: 9px 18px; }}"
-            f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
-            f"QPushButton:disabled {{ background-color: #4A4230; color: #8B8168; }}"
-        )
-        self._send_training_button.setToolTip(shortcut_tooltip("Send all loaded images to Train Model", "S"))
+        self._send_training_button.setStyleSheet(accent_button_qss(extra="padding: 9px 18px;"))
+        self._send_training_button.setToolTip(shortcut_tooltip("Send loaded images to Train Model", "S"))
         self._send_training_button.clicked.connect(self._send_to_training)
         row.addWidget(self._send_training_button)
         self._shortcut_bindings.append((self._send_training_button, "S"))
 
         self._send_grading_button = QPushButton("Send to Grading")
         self._send_grading_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._send_grading_button.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {ACCENT_COLOR};"
-            f"border: 1px solid {ACCENT_COLOR}; border-radius: 6px; padding: 9px 18px; }}"
-            f"QPushButton:hover {{ background-color: rgba(232, 168, 56, 30); }}"
-            f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid #3A3E46; }}"
-        )
-        self._send_grading_button.setToolTip(shortcut_tooltip("Send all loaded images to Grade Images", "D"))
+        self._send_grading_button.setStyleSheet(ghost_button_qss(extra="padding: 9px 18px;"))
+        self._send_grading_button.setToolTip(shortcut_tooltip("Send loaded images to Grade Images", "D"))
         self._send_grading_button.clicked.connect(self._send_to_grading)
         row.addWidget(self._send_grading_button)
         self._shortcut_bindings.append((self._send_grading_button, "D"))
@@ -692,7 +632,7 @@ class ImageImportPage(QWidget):
 
         row.addStretch(1)
 
-        self._count_label = QLabel("0 image(s) loaded")
+        self._count_label = QLabel("0 images loaded")
         self._count_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;")
         row.addWidget(self._count_label)
 
@@ -701,7 +641,7 @@ class ImageImportPage(QWidget):
     # -- Image list management (paginated + threaded thumbnails) ------------
 
     def _all_known_paths(self) -> List[str]:
-        """Every path added this session, whether or not its thumbnail has loaded yet."""
+        """Every path added this session, including ones still waiting on thumbnails."""
         return [item.path for item in self._images] + list(self._pending_paths)
 
     def _add_images(self, paths: List[str]) -> None:
@@ -730,7 +670,7 @@ class ImageImportPage(QWidget):
         self._load_next_batch()
 
     def _load_next_batch(self) -> None:
-        """Materialize up to ``BATCH_SIZE`` pending paths and thumbnail them in the background."""
+        """Take up to ``BATCH_SIZE`` pending paths and thumbnail them in the background."""
         if not self._pending_paths or self._thumbnail_thread is not None:
             self._update_load_more_button()
             return
@@ -854,9 +794,8 @@ class ImageImportPage(QWidget):
                     opened.load()
                     item.image = opened.convert("RGB")
             except (OSError, ValueError):
-                self._show_feedback(f"Could not open \u201c{Path(item.path).name}\u201d for editing.", danger=True)
-                # Restore the previous selection state rather than leaving the
-                # editor pointed at an image that failed to open.
+                self._show_feedback(f"Couldn't open \u201c{Path(item.path).name}\u201d for editing.", danger=True)
+                # Keep the previous selection if this one won't open.
                 self._selected_id = previous_id
                 for other in self._images:
                     other.thumbnail.set_selected(other.id == previous_id)
@@ -866,9 +805,8 @@ class ImageImportPage(QWidget):
         self._editor.setVisible(True)
         self._editor.set_image(item.image)
 
-        # Only the freshly-selected image needs to stay decoded in memory;
-        # evict the previous selection's copy so RAM use doesn't grow with
-        # the number of images the user has merely clicked through.
+        # Drop the previous selection's decoded copy so RAM doesn't grow
+        # just from clicking around.
         if previous_id is not None and previous_id != image_id:
             previous_item = self._find_image(previous_id)
             if previous_item is not None:
@@ -885,14 +823,10 @@ class ImageImportPage(QWidget):
         return next((item for item in self._images if item.id == image_id), None)
 
     def _persist_edited_image(self, item: _LoadedImage, pil_image: Image.Image) -> str:
-        """Write a non-destructively-edited image to a cache file and return its new path.
+        """Save the edited image to a temp file and return the new path.
 
-        Everything downstream of this page (thumbnails, "Send to Training",
-        "Send to Grading") treats ``item.path`` as the authoritative location
-        of an image's current pixels, so edits must land on disk rather than
-        living only in a Python-side ``Image.Image`` -- otherwise they would
-        be silently lost once training/grading re-reads the *original* file
-        from its original path instead of holding decoded copies in RAM.
+        Training/grading re-read from ``item.path``, so edits have to land
+        on disk — not only in a PIL object — or they'd be lost.
         """
         _EDIT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         stem = Path(item.path).stem
@@ -911,7 +845,7 @@ class ImageImportPage(QWidget):
         try:
             new_path = self._persist_edited_image(item, pil_image)
         except OSError as exc:
-            self._show_feedback(f"Edit could not be saved to disk: {exc}", danger=True)
+            self._show_feedback(f"Couldn't save edit to disk: {exc}", danger=True)
             return
 
         item.path = new_path
@@ -927,9 +861,9 @@ class ImageImportPage(QWidget):
 
         if self._count_label is not None:
             if pending:
-                self._count_label.setText(f"{total} image(s) loaded ({pending} thumbnail(s) pending)")
+                self._count_label.setText(f"{total} images loaded ({pending} thumbnails pending)")
             else:
-                self._count_label.setText(f"{total} image(s) loaded")
+                self._count_label.setText(f"{total} images loaded")
 
         if self._send_training_button is not None:
             self._send_training_button.setEnabled(total > 0)
@@ -943,14 +877,7 @@ class ImageImportPage(QWidget):
         self._dataset_warning_banner.setVisible(total > LARGE_DATASET_THRESHOLD)
 
     def _build_path_payload(self) -> List[Dict[str, Any]]:
-        """Path-only payload for the rest of the app.
-
-        Training and grading both read images directly from disk (see
-        ``TrainPage``'s ``_ImageGradeDataset`` and ``PredictPage``'s image
-        loading), so handing off bare paths -- rather than a list of fully
-        decoded ``PIL.Image`` objects -- avoids duplicating potentially
-        thousands of decoded images in memory during the hand-off.
-        """
+        """Path-only list for training/grading (avoids duplicating decoded images)."""
         return [{"path": path} for path in self._all_known_paths()]
 
     def _send_to_training(self) -> None:
@@ -959,8 +886,8 @@ class ImageImportPage(QWidget):
         payload = self._build_path_payload()
         if self.main_window is not None:
             self.main_window.training_images = payload
-        self.images_sent_to_training.emit(payload)
-        self._show_feedback(f"Sent {len(payload)} image(s) to Training.")
+            self.main_window.navigate_to("train")
+        self._show_feedback(f"Sent {len(payload)} images to Training.")
 
     def _send_to_grading(self) -> None:
         if not self._images and not self._pending_paths:
@@ -968,8 +895,8 @@ class ImageImportPage(QWidget):
         payload = self._build_path_payload()
         if self.main_window is not None:
             self.main_window.grading_images = payload
-        self.images_sent_to_grading.emit(payload)
-        self._show_feedback(f"Sent {len(payload)} image(s) to Grading.")
+            self.main_window.navigate_to("grade")
+        self._show_feedback(f"Sent {len(payload)} images to Grading.")
 
     def _show_feedback(self, message: str, *, danger: bool = False) -> None:
         if self._feedback_label is None:
@@ -983,4 +910,4 @@ class ImageImportPage(QWidget):
         if len(failed_names) > 3:
             names += f", and {len(failed_names) - 3} more"
         count_word = "image" if len(failed_names) == 1 else "images"
-        self._show_feedback(f"Could not load {len(failed_names)} {count_word}: {names}", danger=True)
+        self._show_feedback(f"Couldn't load {len(failed_names)} {count_word}: {names}", danger=True)

@@ -1,9 +1,4 @@
-"""
-Pytest configuration for the tests/ directory.
-
-Ensures the project root (which contains the ``app`` package) is importable
-regardless of the current working directory pytest was invoked from.
-"""
+"""Add project root to sys.path so ``app`` imports work."""
 from __future__ import annotations
 
 import sys

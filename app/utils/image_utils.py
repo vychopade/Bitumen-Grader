@@ -1,69 +1,133 @@
-"""
-Image preprocessing helpers.
-
-Provides shared image loading and preprocessing utilities (resizing,
-normalization, tensor conversion, augmentation, etc.) used by both the
-training pipeline and the inference/prediction pipeline.
-"""
+"""Shared image resize / normalize helpers for train and inference."""
 from __future__ import annotations
 
-import torch
-from PIL import Image
+from pathlib import Path
+from typing import Optional, Union
+
+from PIL import Image, ImageOps
 from torchvision import transforms
+from torchvision.transforms import InterpolationMode
 
-#: Spatial resolution expected by BitumenRegressor's ResNet-18 backbone.
-IMAGE_SIZE = 224
+from app.ml.cnn_model import IMAGE_SIZE as DEFAULT_IMAGE_SIZE
 
-#: Standard ImageNet normalization statistics, matching the data the
-#: pretrained ResNet-18 backbone was originally trained on.
+# 256×256×3 for new models. Legacy ResNet-18 checkpoints used 224.
+IMAGE_SIZE = DEFAULT_IMAGE_SIZE
+LEGACY_IMAGE_SIZE = 224
+_INTERPOLATION = InterpolationMode.BILINEAR
+
+# Same ImageNet mean/std used for transfer backbones; also applied to the
+# baseline so train/val/inference share one preprocessing pipeline.
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
-_TRAIN_TRANSFORM = transforms.Compose(
-    [
-        transforms.RandomResizedCrop(IMAGE_SIZE, scale=(0.8, 1.0)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-    ]
-)
 
-_INFERENCE_TRANSFORM = transforms.Compose(
-    [
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-    ]
-)
+def load_rgb_image(source: Union[str, Path, Image.Image]) -> Image.Image:
+    """Load a photo as RGB, honouring EXIF orientation when present."""
+    if isinstance(source, Image.Image):
+        image = source
+        try:
+            transposed = ImageOps.exif_transpose(image)
+        except (OSError, ValueError, SyntaxError):
+            transposed = None
+        if transposed is not None:
+            image = transposed
+        return image.convert("RGB")
+
+    with Image.open(source) as opened:
+        opened.load()
+        try:
+            transposed = ImageOps.exif_transpose(opened)
+        except (OSError, ValueError, SyntaxError):
+            transposed = None
+        image = transposed if transposed is not None else opened
+        return image.convert("RGB")
 
 
-def preprocess_for_training(pil_image: Image.Image) -> torch.Tensor:
-    """Convert a PIL image into an augmented, normalized training tensor.
+def cap_long_edge(image: Image.Image, max_edge: int) -> Image.Image:
+    """Shrink huge camera files before the square resize (keeps aspect ratio).
 
-    Applies a random resized crop, random horizontal flip, and color jitter
-    (for data augmentation) before converting to a tensor and normalizing
-    with ImageNet statistics.
-
-    Args:
-        pil_image: Input image.
-
-    Returns:
-        A ``(3, IMAGE_SIZE, IMAGE_SIZE)`` float tensor.
+    Final ``image_size`` × ``image_size`` conversion still happens in the
+    transform pipeline. Skipping this step would decode 12MP photos every epoch.
     """
-    return _TRAIN_TRANSFORM(pil_image.convert("RGB"))
+    width, height = image.size
+    longest = max(width, height)
+    if longest <= max_edge or max_edge <= 0:
+        return image
+    scale = max_edge / longest
+    new_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    return image.resize(new_size, Image.Resampling.BILINEAR)
 
 
-def preprocess_for_inference(pil_image: Image.Image) -> torch.Tensor:
-    """Convert a PIL image into a normalized inference tensor (no augmentation).
+def prepare_image(
+    source: Union[str, Path, Image.Image],
+    image_size: int = IMAGE_SIZE,
+) -> Image.Image:
+    """RGB image ready for train/eval transforms: EXIF-corrected, long-edge capped."""
+    image = load_rgb_image(source)
+    return cap_long_edge(image, max(int(image_size) * 2, 512))
 
-    Resizes the image to ``(IMAGE_SIZE, IMAGE_SIZE)`` and normalizes it with
-    ImageNet statistics, with no random augmentation applied.
 
-    Args:
-        pil_image: Input image.
+def _square_resize(image_size: int) -> transforms.Resize:
+    """Force every photo to the model's square input, any source resolution."""
+    return transforms.Resize((image_size, image_size), interpolation=_INTERPOLATION)
 
-    Returns:
-        A ``(3, IMAGE_SIZE, IMAGE_SIZE)`` float tensor.
+
+def build_train_transforms(image_size: int = IMAGE_SIZE) -> transforms.Compose:
+    """Augment after the photo has already been resized to ``image_size`` × ``image_size``."""
+    return transforms.Compose(
+        [
+            _square_resize(image_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            # Zoom on the standardized square; output stays image_size × image_size.
+            transforms.RandomResizedCrop(
+                image_size,
+                scale=(0.8, 1.0),
+                interpolation=_INTERPOLATION,
+            ),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ]
+    )
+
+
+def build_eval_transforms(image_size: int = IMAGE_SIZE, *, legacy_crop: bool = False) -> transforms.Compose:
+    """Validation / inference transforms.
+
+    New models resize to ``image_size`` × ``image_size`` (same square as training).
+    Legacy ResNet-18 checkpoints used Resize(256) + CenterCrop(224).
     """
-    return _INFERENCE_TRANSFORM(pil_image.convert("RGB"))
+    if legacy_crop:
+        return transforms.Compose(
+            [
+                transforms.Resize(256, interpolation=_INTERPOLATION),
+                transforms.CenterCrop(LEGACY_IMAGE_SIZE),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+            ]
+        )
+    return transforms.Compose(
+        [
+            _square_resize(image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ]
+    )
+
+
+def is_legacy_resnet18(metadata: Optional[dict]) -> bool:
+    """True for checkpoints saved before the architecture field existed."""
+    metadata = metadata or {}
+    architecture = metadata.get("architecture", "resnet18")
+    image_size = int(metadata.get("image_size", LEGACY_IMAGE_SIZE))
+    return architecture == "resnet18" and image_size == LEGACY_IMAGE_SIZE
+
+
+def image_size_from_metadata(metadata: Optional[dict]) -> int:
+    metadata = metadata or {}
+    if "image_size" in metadata:
+        return int(metadata["image_size"])
+    if metadata.get("architecture", "resnet18") == "resnet18":
+        return LEGACY_IMAGE_SIZE
+    return IMAGE_SIZE

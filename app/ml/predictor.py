@@ -1,49 +1,49 @@
 import logging
 
 import torch
-from PIL import Image
-from torchvision import transforms
 
+from app.constants import OUTPUT_NAMES
 from app.ml.cnn_model import BitumenRegressor
+from app.utils.image_utils import (
+    build_eval_transforms,
+    image_size_from_metadata,
+    is_legacy_resnet18,
+    prepare_image,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class RegressionPredictor:
-    """Loads a trained ``BitumenRegressor`` checkpoint and runs inference on images.
+    """Load a trained checkpoint and predict Water / Solids / Bitumen %.
 
-    When the checkpoint was trained with target z-scoring, outputs are mapped
-    back to percentage units using ``output_stats`` from the metadata sidecar.
-    Otherwise the network's raw outputs are treated as percentages already.
+    If training used z-scored targets, we undo that with ``output_stats``
+    from the metadata JSON. Otherwise raw outputs are already percentages.
+    Architecture and image size come from metadata so baseline / ResNet50 /
+    VGG16 / legacy ResNet-18 checkpoints all load correctly.
     """
 
-    OUTPUT_NAMES = ["Water", "Solids", "Bitumen"]
+    OUTPUT_NAMES = list(OUTPUT_NAMES)
 
     def __init__(self, model_path, metadata):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
-        self.model = BitumenRegressor.from_pretrained(model_path, device)
+        self.metadata = metadata or {}
+        self.model = BitumenRegressor.from_checkpoint(model_path, self.metadata, device)
 
         self.output_stats = metadata["output_stats"]
         self.normalise_targets = bool(metadata.get("normalise_targets", True))
         self.output_names = list(self.OUTPUT_NAMES)
         self.model.eval()
 
-        self.transform = transforms.Compose(
-            [
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
+        image_size = image_size_from_metadata(self.metadata)
+        self.image_size = image_size
+        self.transform = build_eval_transforms(
+            image_size, legacy_crop=is_legacy_resnet18(self.metadata)
         )
 
     def _to_percentages(self, raw_outputs) -> list:
-        """Map (3,) raw model outputs to clamped [0, 100] percentage floats.
-
-        When training used target z-scoring, invert with ``output_stats``.
-        Otherwise the network already predicts in original percentage units.
-        """
+        """Map 3 raw outputs to [0, 100] percentages (undo z-score if needed)."""
         values = []
         for index, name in enumerate(self.output_names):
             value = raw_outputs[index].item()
@@ -55,7 +55,7 @@ class RegressionPredictor:
         return values
 
     def predict(self, pil_image) -> dict:
-        image = pil_image if pil_image.mode == "RGB" else pil_image.convert("RGB")
+        image = prepare_image(pil_image, self.image_size)
         tensor = self.transform(image)
         tensor = tensor.unsqueeze(0).to(self.device)
 
@@ -79,12 +79,8 @@ class RegressionPredictor:
         results = []
         for path in image_paths:
             try:
-                with Image.open(path) as opened:
-                    opened.load()
-                    image = opened.convert("RGB")
+                results.append(self.predict(path))
             except (OSError, ValueError) as exc:
                 logger.warning("Could not load image %r for prediction: %s", path, exc)
                 results.append(None)
-                continue
-            results.append(self.predict(image))
         return results

@@ -1,11 +1,8 @@
 """
-Model card component (regression).
+Model card.
 
-Reusable card widget summarizing a single saved regression model: name,
-creation date, a "Regression" type pill, epochs trained, a best-validation
-MAE summary, and actions to load it as the active model, expand its full
-training history (MAE curve, loss curve, output normalisation stats), or
-delete it.
+One saved model: name, date, type pill, epochs, best val MAE, plus load /
+details / delete. Details expands MAE/loss curves and output stats.
 """
 from __future__ import annotations
 
@@ -33,31 +30,32 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QWidget,
 )
 
-# --------------------------------------------------------------------------
-# Design tokens (kept local so this component has no dependency on MainWindow)
-# --------------------------------------------------------------------------
+from app.constants import OUTPUT_NAMES
+from app.theme import (
+    ACCENT_COLOR,
+    BACKGROUND_COLOR,
+    BITUMEN_LINE_COLOR,
+    BORDER_COLOR,
+    DANGER_COLOR,
+    DANGER_HOVER_BG,
+    PILL_BACKGROUND,
+    REGRESSION_PILL_COLOR,
+    SOLIDS_LINE_COLOR,
+    SURFACE_COLOR,
+    SURFACE_HOVER_COLOR,
+    TEXT_INVERSE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    VAL_LINE_COLOR,
+    WATER_LINE_COLOR,
+    accent_button_qss,
+)
 
-BACKGROUND_COLOR = "#1A1C20"
-SURFACE_COLOR = "#22252C"
-BORDER_COLOR = "#2E3138"
-ACCENT_COLOR = "#E8A838"
-ACCENT_HOVER_COLOR = "#C98A20"
-TEXT_PRIMARY = "#E8E9EC"
-TEXT_SECONDARY = "#8B909A"
-DANGER_COLOR = "#E5484D"
-DANGER_HOVER_BG = "rgba(229, 72, 77, 40)"
-PILL_BACKGROUND = "#2A2E36"
-REGRESSION_PILL_COLOR = "#4A7FC1"
-VAL_LINE_COLOR = "#5B9BD5"
-WATER_LINE_COLOR = "#5B9BD5"
-SOLIDS_LINE_COLOR = "#3CB878"
-BITUMEN_LINE_COLOR = "#E8A838"
-
-OUTPUT_LABELS = ("Water", "Solids", "Bitumen")
+OUTPUT_LABELS = OUTPUT_NAMES
 
 
 def _build_check_icon(color: str, size: int = 14) -> QIcon:
-    """Draw a small checkmark glyph with QPainter (avoids font glyph-coverage issues)."""
+    """Small checkmark drawn with QPainter."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
 
@@ -82,7 +80,7 @@ def _build_check_icon(color: str, size: int = 14) -> QIcon:
 
 
 def _build_chevron_icon(direction: str, color: str, size: int = 12) -> QIcon:
-    """Draw a small up/down chevron used to indicate the details accordion state."""
+    """Up/down chevron for the details accordion."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
 
@@ -105,7 +103,7 @@ def _build_chevron_icon(direction: str, color: str, size: int = 12) -> QIcon:
 
 
 def _build_trash_icon(color: str, size: int = 16) -> QIcon:
-    """Draw a simple trash-can glyph for the delete button."""
+    """Trash-can icon for delete."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
 
@@ -134,17 +132,16 @@ def _build_trash_icon(color: str, size: int = 16) -> QIcon:
 
 
 class ModelCard(QFrame):
-    """Card summarizing one saved regression model, with load/details/delete actions.
+    """Summary card for one saved model, with load / details / delete.
 
-    ``metadata`` is a dict as returned by ``app.utils.model_io.list_saved_models``
-    (i.e. the saved sidecar JSON augmented with ``model_path``/``metadata_path``
-    string keys). The card itself never touches disk or ``MainWindow`` directly;
-    it only emits ``load_requested``/``delete_requested`` with the metadata dict,
-    leaving the owning page to perform the actual state changes.
+    ``metadata`` matches ``list_saved_models`` (JSON fields plus
+    ``model_path`` / ``metadata_path``). The card never touches disk; it
+    only emits ``load_requested`` / ``delete_requested``.
     """
 
     load_requested = pyqtSignal(dict)
     delete_requested = pyqtSignal(dict)
+    retrain_requested = pyqtSignal(dict)
 
     def __init__(self, metadata: Dict[str, Any], is_active: bool = False, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -155,6 +152,7 @@ class ModelCard(QFrame):
 
         self._active_badge: Optional[QLabel] = None
         self._load_button: Optional[QPushButton] = None
+        self._retrain_button: Optional[QPushButton] = None
         self._details_button: Optional[QPushButton] = None
         self._delete_button: Optional[QPushButton] = None
         self._details_section: Optional[QWidget] = None
@@ -211,6 +209,19 @@ class ModelCard(QFrame):
 
         row.addWidget(self._build_pill("Regression", background=REGRESSION_PILL_COLOR, color="#FFFFFF"))
 
+        architecture = self.metadata.get("architecture")
+        if architecture:
+            labels = {
+                "baseline": "Baseline CNN",
+                "resnet50": "ResNet50",
+                "vgg16": "VGG16",
+                "resnet18": "ResNet18",
+            }
+            row.addWidget(self._build_pill(labels.get(architecture, str(architecture))))
+
+        if self.metadata.get("continued_training"):
+            row.addWidget(self._build_pill("Retrained"))
+
         epoch_count = self.metadata.get("final_epoch") or len(self.metadata.get("training_history") or [])
         row.addWidget(self._build_pill(f"{epoch_count} epoch{'s' if epoch_count != 1 else ''}"))
 
@@ -228,10 +239,17 @@ class ModelCard(QFrame):
     def _build_mae_summary_row(self) -> QLabel:
         best_val_mae = self.metadata.get("best_val_mae") or {}
         parts = [
-            f"Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%",
+            f"Val Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%",
             f"Solids \u00b1{best_val_mae.get('Solids', 0.0):.2f}%",
             f"Bitumen \u00b1{best_val_mae.get('Bitumen', 0.0):.2f}%",
         ]
+        test_mae = self.metadata.get("test_mae") or None
+        if test_mae:
+            parts.append(
+                f"| Test Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
+                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
+                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
+            )
         label = QLabel("   ".join(parts))
         label.setWordWrap(True)
         label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
@@ -244,19 +262,30 @@ class ModelCard(QFrame):
         self._load_button = QPushButton("Load Model")
         self._load_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._load_button.setIconSize(QSize(12, 12))
-        self._load_button.setToolTip("Set this as the active model for grading")
+        self._load_button.setToolTip("Use this model for grading")
         self._load_button.clicked.connect(lambda: self.load_requested.emit(self.metadata))
         row.addWidget(self._load_button)
+
+        self._retrain_button = QPushButton("Retrain")
+        self._retrain_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._retrain_button.setToolTip("Continue this model on a new labelled dataset")
+        self._retrain_button.setStyleSheet(
+            f"QPushButton {{ background-color: transparent; color: {TEXT_PRIMARY};"
+            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 8px 14px; font-size: 12px; }}"
+            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
+        )
+        self._retrain_button.clicked.connect(lambda: self.retrain_requested.emit(self.metadata))
+        row.addWidget(self._retrain_button)
 
         self._details_button = QPushButton("  Details")
         self._details_button.setIcon(_build_chevron_icon("down", TEXT_PRIMARY))
         self._details_button.setIconSize(QSize(12, 12))
         self._details_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._details_button.setToolTip("Show MAE/loss curves and output normalisation stats")
+        self._details_button.setToolTip("Show MAE/loss curves and output stats")
         self._details_button.setStyleSheet(
             f"QPushButton {{ background-color: transparent; color: {TEXT_PRIMARY};"
             f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 8px 14px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: #2A2E36; }}"
+            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
         )
         self._details_button.clicked.connect(self._toggle_details)
         row.addWidget(self._details_button)
@@ -293,6 +322,9 @@ class ModelCard(QFrame):
         history = self.metadata.get("training_history") or []
         layout.addWidget(self._build_mae_chart(history))
         layout.addWidget(self._build_loss_chart(history))
+        r2_table = self._build_r2_table()
+        if r2_table is not None:
+            layout.addWidget(r2_table)
         layout.addWidget(self._build_output_stats_table())
 
         return section
@@ -362,13 +394,53 @@ class ModelCard(QFrame):
 
     @staticmethod
     def _build_no_history_placeholder() -> QWidget:
-        label = QLabel("No training history available.")
+        label = QLabel("No training history saved.")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setFixedHeight(200)
         label.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 12px; background-color: {BACKGROUND_COLOR}; border-radius: 6px;"
         )
         return label
+
+    def _build_r2_table(self) -> Optional[QTableWidget]:
+        val_r2 = self.metadata.get("best_val_r2") or {}
+        test_r2 = self.metadata.get("test_r2") or {}
+        if not val_r2 and not test_r2:
+            return None
+
+        has_test = bool(test_r2)
+        table = QTableWidget(len(OUTPUT_LABELS), 3 if has_test else 2)
+        headers = ["Output", "Val R²"] + (["Test R²"] if has_test else [])
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setFixedHeight(130)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setStyleSheet(
+            f"""
+            QTableWidget {{
+                background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
+                border: 1px solid {BORDER_COLOR}; border-radius: 6px; gridline-color: {BORDER_COLOR};
+            }}
+            QTableWidget::item {{ padding: 3px; }}
+            QHeaderView::section {{
+                background-color: {SURFACE_COLOR}; color: {TEXT_SECONDARY}; border: none;
+                padding: 5px; font-size: 10px; font-weight: 600;
+            }}
+            """
+        )
+        for row, label in enumerate(OUTPUT_LABELS):
+            values = [label, f"{val_r2.get(label, 0.0):.3f}"]
+            if has_test:
+                values.append(f"{test_r2.get(label, 0.0):.3f}")
+            for col, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if col > 0:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, col, item)
+        return table
 
     def _build_output_stats_table(self) -> QTableWidget:
         output_stats = self.metadata.get("output_stats") or {}
@@ -408,7 +480,7 @@ class ModelCard(QFrame):
     # -- Public API ----------------------------------------------------------
 
     def set_active(self, is_active: bool) -> None:
-        """Update the card's "active model" styling (left border + badge + Load button)."""
+        """Update active styling (left border, badge, Load button)."""
         self._is_active = is_active
         self._active_badge.setVisible(is_active)
 
@@ -423,11 +495,9 @@ class ModelCard(QFrame):
                 """
             )
             self._load_button.setText("  Active Model")
-            self._load_button.setIcon(_build_check_icon("#13151A"))
+            self._load_button.setIcon(_build_check_icon(TEXT_INVERSE))
             self._load_button.setStyleSheet(
-                f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 700;"
-                f"border: none; border-radius: 6px; padding: 8px 14px; font-size: 12px; }}"
-                f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
+                accent_button_qss(extra="font-weight: 700; padding: 8px 14px; font-size: 12px;")
             )
         else:
             self.setStyleSheet(
@@ -437,9 +507,7 @@ class ModelCard(QFrame):
             self._load_button.setText("Load Model")
             self._load_button.setIcon(QIcon())
             self._load_button.setStyleSheet(
-                f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 700;"
-                f"border: none; border-radius: 6px; padding: 8px 14px; font-size: 12px; }}"
-                f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
+                accent_button_qss(extra="font-weight: 700; padding: 8px 14px; font-size: 12px;")
             )
 
     def is_active(self) -> bool:
@@ -460,7 +528,7 @@ class ModelCard(QFrame):
         reply = QMessageBox.question(
             self,
             "Delete Model",
-            f'Delete "{name}"? This permanently removes its .pt and .json files and cannot be undone.',
+            f'Delete "{name}"? This removes its .pt and .json files for good.',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

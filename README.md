@@ -1,8 +1,8 @@
 # BitumenGrader
 
-BitumenGrader is a PyQt6 desktop application that trains and runs a convolutional neural network (CNN) regressor to predict Water, Solids, and Bitumen composition percentages from photographs of bitumen samples, with full workflows for importing/editing images, training models, grading new images, and managing saved models.
+Desktop app that trains a CNN to predict Water, Solids, and Bitumen % from froth photos. The default model is a compact CNN trained from scratch; ImageNet transfer (ResNet50 / VGG16) is optional. You can import/edit images, train or continue a saved model on a new dataset, grade new photos, and manage saved models.
 
-## Installation
+## Install
 
 ```bash
 git clone <repository-url> BitumenGrader
@@ -10,24 +10,17 @@ cd BitumenGrader
 pip install -r requirements.txt
 ```
 
-Then launch the app:
+Run:
 
 ```bash
 python main.py
 ```
 
-## Screenshot
+## Docs
 
-![BitumenGrader screenshot placeholder](assets/screenshot.png)
-*(Add a screenshot of the app here, e.g. the Grade Images page with results.)*
-
-## Documentation
-
-For a full walkthrough written for non-technical users -- installation, grading images, training a model, hyperparameter reference, image editing, model management, and troubleshooting -- see [USER_GUIDE.txt](USER_GUIDE.txt).
+See [USER_GUIDE.txt](USER_GUIDE.txt) for install, grading, training, settings, and troubleshooting.
 
 ## Tests
-
-A small offline smoke-test suite covers the ML backend (`BitumenRegressor`, `RegressionPredictor`, `RegressionDataset`, and model save/load round-tripping):
 
 ```bash
 python -m pytest tests/smoke_test.py -v

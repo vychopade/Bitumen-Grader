@@ -1,11 +1,8 @@
 """
-Image editor widget.
+Image editor.
 
-Reusable widget providing basic image editing operations needed before
-training/prediction: cropping, flipping (horizontal/vertical), and rotating
-an image, with a live preview. Edits are non-destructive (applied to an
-in-memory working copy) until the user presses "Apply Changes", at which
-point ``image_updated`` is emitted with the final Pillow image.
+Crop, flip, and rotate with a live preview. Changes stay in memory until
+"Apply Changes", which emits ``image_updated``.
 """
 from __future__ import annotations
 
@@ -34,20 +31,19 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-# --------------------------------------------------------------------------
-# Design tokens (kept local so this component has no dependency on MainWindow)
-# --------------------------------------------------------------------------
-
-SURFACE_COLOR = "#22252C"
-BORDER_COLOR = "#33373F"
-ACCENT_COLOR = "#E8A838"
-ACCENT_HOVER_COLOR = "#C98A20"
-TEXT_PRIMARY = "#E8E9EC"
-TEXT_SECONDARY = "#8B909A"
-WARNING_COLOR = "#F5C518"
-DANGER_COLOR = "#E5484D"
-BUTTON_COLOR = "#2A2E36"
-BUTTON_HOVER_COLOR = "#33373F"
+from app.theme import (
+    ACCENT_COLOR,
+    ACCENT_HOVER_COLOR,
+    BORDER_COLOR,
+    BUTTON_COLOR,
+    BUTTON_HOVER_COLOR,
+    DANGER_COLOR,
+    SURFACE_COLOR,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    WARNING_COLOR,
+    accent_button_qss,
+)
 
 PREVIEW_SIZE = 260
 CROP_DIALOG_MAX = 480
@@ -56,15 +52,7 @@ HANDLE_SIZE = 10
 
 
 def pil_to_qimage(image: Image.Image) -> QImage:
-    """Convert a PIL image to a standalone QImage.
-
-    Copies the underlying buffer so the returned QImage remains valid after
-    the source ``bytes`` object is garbage collected. Unlike ``QPixmap``,
-    ``QImage`` has no dependency on the GUI thread/platform paint engine, so
-    this is safe to call from a background ``QThread`` (e.g. thumbnail
-    generation workers) -- only convert the result to a ``QPixmap`` back on
-    the main thread.
-    """
+    """PIL → QImage (copied buffer). Safe to call from a background thread."""
     rgba = image.convert("RGBA")
     data = rgba.tobytes("raw", "RGBA")
     qimage = QImage(data, rgba.width, rgba.height, QImage.Format.Format_RGBA8888)
@@ -72,12 +60,12 @@ def pil_to_qimage(image: Image.Image) -> QImage:
 
 
 def pil_to_qpixmap(image: Image.Image) -> QPixmap:
-    """Convert a PIL image to a QPixmap via QImage."""
+    """PIL → QPixmap via QImage."""
     return QPixmap.fromImage(pil_to_qimage(image))
 
 
 def _build_icon(kind: str, color: str, size: int = 16) -> QIcon:
-    """Draw a small flat line-icon (crop / flip / rotate) with QPainter primitives."""
+    """Small crop / flip / rotate line icon."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
 
@@ -165,7 +153,7 @@ def _build_icon(kind: str, color: str, size: int = 16) -> QIcon:
         painter.drawPolygon(arrow)
     elif kind == "crop":
         corner = size * 0.32
-        # Four L-shaped corner brackets, evoking a crop-tool icon.
+        # Four L-shaped corners for the crop icon.
         painter.drawLine(QPointF(margin, margin), QPointF(margin + corner, margin))
         painter.drawLine(QPointF(margin, margin), QPointF(margin, margin + corner))
         painter.drawLine(QPointF(size - margin - corner, margin), QPointF(size - margin, margin))
@@ -180,7 +168,7 @@ def _build_icon(kind: str, color: str, size: int = 16) -> QIcon:
 
 
 class _CropArea(QWidget):
-    """Interactive crop-rectangle overlay drawn on top of a scaled image preview."""
+    """Draggable crop rectangle over a scaled preview."""
 
     def __init__(self, pil_image: Image.Image, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -206,7 +194,7 @@ class _CropArea(QWidget):
         self.setMouseTracking(True)
 
     def crop_box(self) -> tuple:
-        """Map the on-screen crop rectangle back to source-image pixel coordinates."""
+        """Map the on-screen crop box back to source-image pixels."""
         scale_x = self._source_image.width / self._display_pixmap.width()
         scale_y = self._source_image.height / self._display_pixmap.height()
 
@@ -312,7 +300,7 @@ class _CropArea(QWidget):
 
 
 class _CropDialog(QDialog):
-    """Modal dialog that lets the user drag a resizable rectangle to crop an image."""
+    """Modal crop dialog with a resizable rectangle."""
 
     def __init__(self, pil_image: Image.Image, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -327,7 +315,7 @@ class _CropDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
 
-        hint = QLabel("Drag the corner handles to resize, or drag inside the box to move it.")
+        hint = QLabel("Drag the corners to resize, or drag inside the box to move it.")
         hint.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px;")
         layout.addWidget(hint)
 
@@ -377,17 +365,14 @@ class _CropDialog(QDialog):
 
 
 class ImageEditor(QWidget):
-    """Non-destructive image editor: preview, crop/flip/rotate, apply/reset.
+    """Preview + crop/flip/rotate. Apply/reset when you're ready.
 
-    Call ``set_image(pil_image)`` to load an image. Flip/rotate/crop
-    operations mutate an in-memory working copy and update the preview
-    immediately, but nothing is emitted until ``Apply Changes`` is pressed
-    (at which point ``image_updated`` fires with the final image). A yellow
-    dot + "Unsaved edits" label appear whenever there are pending changes
-    that have not yet been applied.
+    ``set_image`` loads a photo. Edits update a working copy right away, but
+    ``image_updated`` only fires on Apply. A yellow "Unsaved edits" note
+    shows while there are pending changes.
     """
 
-    #: Emitted with the edited PIL.Image.Image when "Apply Changes" is pressed.
+    #: Emitted with the edited PIL image when Apply is pressed.
     image_updated = pyqtSignal(object)
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -466,10 +451,7 @@ class ImageEditor(QWidget):
 
         self._apply_button = QPushButton("Apply Changes")
         self._apply_button.setStyleSheet(
-            f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 600;"
-            f"border: none; border-radius: 6px; padding: 10px 16px; }}"
-            f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
-            f"QPushButton:disabled {{ background-color: #4A4230; color: #8B8168; }}"
+            accent_button_qss(extra="padding: 10px 16px;")
         )
         self._apply_button.clicked.connect(self._apply_changes)
         layout.addWidget(self._apply_button)
@@ -504,7 +486,7 @@ class ImageEditor(QWidget):
     # -- Public API ----------------------------------------------------------
 
     def set_image(self, pil_image: Image.Image) -> None:
-        """Load a new image into the editor, discarding any previous edits."""
+        """Load an image, discarding any previous edits."""
         self._original_image = pil_image.copy()
         self._working_image = pil_image.copy()
         self._set_dirty(False)
@@ -512,15 +494,15 @@ class ImageEditor(QWidget):
         self._update_controls_enabled()
 
     def current_image(self) -> Optional[Image.Image]:
-        """Return the current working image (may include unapplied edits)."""
+        """Current working image (may include unapplied edits)."""
         return self._working_image
 
     def has_pending_changes(self) -> bool:
-        """Whether there are edits that haven't been applied yet."""
+        """True if there are edits that haven't been applied yet."""
         return self._dirty
 
     def clear(self) -> None:
-        """Reset the editor to its empty ("no image loaded") state."""
+        """Empty the editor."""
         self._original_image = None
         self._working_image = None
         self._set_dirty(False)

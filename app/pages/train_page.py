@@ -1,41 +1,27 @@
 """
-Model Training page (regression).
+Train page.
 
-Provides the UI for training a ``BitumenRegressor`` to predict Water,
-Solids, and Bitumen content from sample images: loading a labelled CSV,
-selecting the matching image folder, reviewing a dataset summary,
-configuring hyperparameters, and running training on a background QThread
-while streaming live progress (loss + MAE curves, compositional check,
-timestamped log) into an embedded progress panel.
-
-Dataset loading, filename matching, and train/val splitting are all handled
-by ``RegressionDataset`` (see ``app.ml.dataset``); this page only reads a
-few of its methods (``get_output_stats``/``get_match_summary``) plus the raw
-``matched`` list to build the Step 2/3 summaries, and never holds decoded
-images itself.
+Load a labelled CSV, pick the image folder, choose architecture and split,
+and run training. ``RegressionDataset`` handles matching/splitting; this page
+just builds the summaries and wires ``RegressionTrainer`` to the progress panel.
 """
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 import pandas as pd
 import torch
-from PyQt6.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
-    QColor,
     QDragEnterEvent,
     QDropEvent,
-    QIcon,
-    QPainter,
-    QPen,
-    QPixmap,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -45,7 +31,6 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSlider,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -55,107 +40,76 @@ from PyQt6.QtWidgets import (
 from torch.utils.data import DataLoader
 
 from app.components.progress_panel import ProgressPanel
-from app.ml.cnn_model import BitumenRegressor
+from app.constants import OUTPUT_NAMES
+from app.ml.cnn_model import (
+    ARCHITECTURE_LABELS,
+    TRAINABLE_ARCHITECTURES,
+    BitumenRegressor,
+    IMAGE_SIZE,
+)
 from app.ml.dataset import RegressionDataset
 from app.ml.trainer import RegressionTrainer, RegressionTrainingResult
-from app.pages.model_manager_page import ModelManagerPage
+from app.paths import MODELS_DIR
+from app.theme import (
+    ACCENT_COLOR,
+    BACKGROUND_COLOR,
+    BORDER_COLOR,
+    DANGER_COLOR,
+    PAGE_MARGINS,
+    PAGE_SPACING,
+    SUCCESS_COLOR,
+    SURFACE_COLOR,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    accent_button_qss,
+    card_qss,
+    danger_outline_button_qss,
+    drop_zone_qss,
+    secondary_button_qss,
+)
 from app.utils.data_io import SUPPORTED_EXTENSIONS as SUPPORTED_LABEL_EXTENSIONS
 from app.utils.data_io import read_labels_file
-from app.utils.model_io import load_model_metadata, save_model
+from app.utils.image_utils import image_size_from_metadata, is_legacy_resnet18
+from app.utils.model_io import list_saved_models, load_model_metadata, save_model
 from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
 
 if TYPE_CHECKING:
     from app.main_window import MainWindow
 
-# --------------------------------------------------------------------------
-# Design tokens (kept local so this page has no dependency on MainWindow)
-# --------------------------------------------------------------------------
-
-BACKGROUND_COLOR = "#1A1C20"
-SURFACE_COLOR = "#22252C"
-BORDER_COLOR = "#33373F"
-ACCENT_COLOR = "#E8A838"
-ACCENT_HOVER_COLOR = "#C98A20"
-TEXT_PRIMARY = "#E8E9EC"
-TEXT_SECONDARY = "#8B909A"
-DANGER_COLOR = "#E5484D"
-DANGER_HOVER_BG = "rgba(229, 72, 77, 40)"
-SUCCESS_COLOR = "#3CB878"
+# Edited imports land here; prefer the original photo folder when sending to Train.
+_EDIT_CACHE_DIR_NAME = "bitumengrader_edited_images"
 
 LEFT_PANEL_WIDTH = 500
 MAX_UNMATCHED_PREVIEW = 200
 VAL_SPLIT_REBUILD_DEBOUNCE_MS = 300
 
 EXPECTED_COLUMNS = list(RegressionDataset.EXPECTED_COLUMNS)  # ["Image", "Pan", "Water", "Solids", "Bitumen"]
-OUTPUT_LABELS = ("Water", "Solids", "Bitumen")
+OUTPUT_LABELS = OUTPUT_NAMES
 
-BATCH_SIZE_OPTIONS = (8, 16, 32, 64)
-LEARNING_RATE_OPTIONS = (0.0001, 0.001, 0.01)
-OPTIMIZER_OPTIONS = ("Adam", "SGD")
-
-_MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "models"
-
-HYPERPARAM_INFO_TEXT = (
-    "Epochs: How many times the model sees your full dataset.\n"
-    "Batch Size: How many images processed at once. 32 works well for most computers.\n"
-    "Learning Rate: How fast the model adjusts. 0.001 is a safe starting point.\n"
-    "Optimizer: Adam works well for most cases.\n"
-    "Weight Decay: Helps prevent the model from memorising your training images. Leave at default.\n"
-    "Validation Split: Images held back to test the model during training. 20% is recommended.\n"
-    "Pretrained Backbone: Starts from a model pre-trained on millions of images. Almost always improves results.\n"
-    "Normalise Targets: Scales Water, Solids, and Bitumen to a common range so the model learns all three equally.\n"
-    "Early Stopping Patience: Training stops if results stop improving for this many epochs in a row."
-)
+BATCH_SIZE = 32
+LEARNING_RATE = 0.0001
+WEIGHT_DECAY = 0.0001
+OPTIMIZER_NAME = "Adam"
+VAL_FRACTION = 0.20
+TEST_FRACTION = 0.15
+EARLY_STOPPING_PATIENCE = 10
+SUM_PENALTY_WEIGHT = 0.10
+TRANSFER_FREEZE_EPOCHS = 3
 
 
 def _default_num_workers() -> int:
-    """PyTorch DataLoader worker-process count for streaming images from disk.
+    """How many DataLoader workers to use when reading images from disk.
 
-    Background worker processes decode images in parallel while the CPU/GPU
-    trains on the previous batch. Windows' multiprocessing start method
-    (``spawn``, with no ``fork``) makes worker processes considerably more
-    expensive to start in bundled desktop apps, so we fall back to loading
-    on the main process there (0 workers).
+    Extra workers decode the next batch while training runs. On Windows,
+    spawning them is slow in a desktop app, so we use 0 there.
     """
     import platform
 
     return 0 if platform.system() == "Windows" else 4
 
 
-def _build_info_icon(color: str, size: int = 14) -> QIcon:
-    """Draw a small "info circle" icon (avoids relying on the \u24d8 glyph's font coverage)."""
-    from PyQt6.QtCore import QPointF, QRectF
-
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    outline_pen = QPen(QColor(color))
-    outline_pen.setWidthF(1.3)
-    painter.setPen(outline_pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    margin = size * 0.08
-    painter.drawEllipse(QRectF(margin, margin, size - 2 * margin, size - 2 * margin))
-
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(color))
-    dot_radius = size * 0.07
-    painter.drawEllipse(QPointF(size / 2, size * 0.32), dot_radius, dot_radius)
-
-    stem_pen = QPen(QColor(color))
-    stem_pen.setWidthF(1.8)
-    stem_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    painter.setPen(stem_pen)
-    painter.drawLine(QPointF(size / 2, size * 0.48), QPointF(size / 2, size * 0.74))
-
-    painter.end()
-    return QIcon(pixmap)
-
-
 class _CsvDropZone(QFrame):
-    """Dashed drag-and-drop target for the training CSV, with a "Browse" button."""
+    """Dashed drop area for the training CSV, plus a Browse button."""
 
     file_selected = pyqtSignal(str)
 
@@ -175,12 +129,12 @@ class _CsvDropZone(QFrame):
         layout.setSpacing(6)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("Drag & drop your CSV or Excel file here")
+        title = QLabel("Drop your CSV or Excel file here")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600; background: transparent;")
         layout.addWidget(title)
 
-        subtitle = QLabel("Accepts .csv, .txt, .xlsx, and .xls files.")
+        subtitle = QLabel(".csv, .txt, .xlsx, or .xls")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         layout.addWidget(subtitle)
@@ -188,21 +142,12 @@ class _CsvDropZone(QFrame):
         self.browse_button = QPushButton("Browse")
         self.browse_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.browse_button.setFixedWidth(120)
-        self.browse_button.setStyleSheet(
-            f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 600;"
-            f"border: none; border-radius: 6px; padding: 7px 14px; }}"
-            f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
-        )
+        self.browse_button.setStyleSheet(accent_button_qss(extra="padding: 7px 14px;"))
         self.browse_button.clicked.connect(self._browse_file)
         layout.addWidget(self.browse_button, 0, Qt.AlignmentFlag.AlignHCenter)
 
     def _apply_style(self, active: bool) -> None:
-        border_color = ACCENT_HOVER_COLOR if active else ACCENT_COLOR
-        background = "#2A2E36" if active else SURFACE_COLOR
-        self.setStyleSheet(
-            f"QFrame#csvDropZone {{ background-color: {background}; border: 2px dashed {border_color};"
-            f"border-radius: 8px; }}"
-        )
+        self.setStyleSheet(drop_zone_qss("csvDropZone", active=active))
 
     def _browse_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -247,11 +192,11 @@ class _CsvDropZone(QFrame):
 
 
 class _MatchSummaryCard(QFrame):
-    """Shows "N of M images matched" plus expandable lists of unmatched filenames and invalid rows."""
+    """Match count plus expandable unmatched / invalid-row lists."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setStyleSheet(f"QFrame {{ background-color: {BACKGROUND_COLOR}; border-radius: 6px; }}")
+        self.setStyleSheet(card_qss(inset=True))
 
         self._unmatched_count = 0
         self._invalid_count = 0
@@ -330,8 +275,8 @@ class _MatchSummaryCard(QFrame):
 
         if rate_pct < 50:
             self._tip_label.setText(
-                "Check that filenames in your CSV match your image files. The app tries "
-                "matching with and without file extensions automatically."
+                "Check that CSV filenames match your image files. Matching works "
+                "with or without the file extension."
             )
             self._tip_label.setVisible(True)
         else:
@@ -357,7 +302,7 @@ class _MatchSummaryCard(QFrame):
         if invalid_rows:
             word = "row" if self._invalid_count == 1 else "rows"
             self._invalid_summary_label.setText(
-                f"{self._invalid_count} {word} skipped \u2014 could not read their Water/Solids/Bitumen/Pan values."
+                f"{self._invalid_count} {word} skipped \u2014 couldn't read Water/Solids/Bitumen/Pan."
             )
             self._invalid_summary_label.setVisible(True)
 
@@ -390,11 +335,11 @@ class _MatchSummaryCard(QFrame):
 
 
 class _DatasetSummaryCard(QFrame):
-    """Total/train/val counts, per-output ranges, and a pan-grade distribution with bars."""
+    """Sample counts, output ranges, and pan-grade bars."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setStyleSheet(f"QFrame {{ background-color: {BACKGROUND_COLOR}; border-radius: 6px; }}")
+        self.setStyleSheet(card_qss(inset=True))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
@@ -414,7 +359,7 @@ class _DatasetSummaryCard(QFrame):
         self._ranges_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
         layout.addWidget(self._ranges_label)
 
-        pan_title = QLabel("Pan grade distribution:")
+        pan_title = QLabel("Pan grades:")
         pan_title.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; background: transparent;"
         )
@@ -424,21 +369,41 @@ class _DatasetSummaryCard(QFrame):
         self._pan_container.setSpacing(6)
         layout.addLayout(self._pan_container)
 
+        self._campaigns_title = QLabel("Held-out campaigns:")
+        self._campaigns_title.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; background: transparent;"
+        )
+        self._campaigns_title.setVisible(False)
+        layout.addWidget(self._campaigns_title)
+
+        self._campaigns_label = QLabel("")
+        self._campaigns_label.setWordWrap(True)
+        self._campaigns_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
+        self._campaigns_label.setVisible(False)
+        layout.addWidget(self._campaigns_label)
+
     def update_summary(
         self,
         total: int,
         train_count: int,
         val_count: int,
+        test_count: int,
         val_fraction: float,
+        test_fraction: float,
         output_ranges: Dict[str, Dict[str, float]],
         pan_distribution: Dict[int, int],
+        split_mode: str = "random",
+        split_campaigns: Optional[Dict[str, List[str]]] = None,
+        split_fallback_reason: Optional[str] = None,
     ) -> None:
-        train_pct = round((1 - val_fraction) * 100)
+        train_pct = round((1 - val_fraction - test_fraction) * 100)
         val_pct = round(val_fraction * 100)
+        test_pct = round(test_fraction * 100)
         self._counts_label.setText(
-            f"Total matched samples: {total}\n"
-            f"Training samples: {train_count} ({train_pct}%)\n"
-            f"Validation samples: {val_count} ({val_pct}%)"
+            f"Matched: {total}\n"
+            f"Train: {train_count} ({train_pct}%)\n"
+            f"Validation: {val_count} ({val_pct}%)\n"
+            f"Test: {test_count} ({test_pct}%)"
         )
 
         lines = []
@@ -481,18 +446,29 @@ class _DatasetSummaryCard(QFrame):
 
             self._pan_container.addWidget(row_widget)
 
+        show_campaigns = split_mode == "experiment" or bool(split_fallback_reason)
+        if show_campaigns:
+            campaigns = split_campaigns or {}
+            lines = []
+            for key, title in (("train", "Train"), ("val", "Val"), ("test", "Test")):
+                names = campaigns.get(key) or []
+                lines.append(f"{title}: {', '.join(names) if names else '—'}")
+            if split_fallback_reason:
+                lines.append(split_fallback_reason)
+            self._campaigns_label.setText("\n".join(lines))
+            self._campaigns_title.setVisible(True)
+            self._campaigns_label.setVisible(True)
+        else:
+            self._campaigns_title.setVisible(False)
+            self._campaigns_label.setVisible(False)
+
 
 class TrainPage(QWidget):
-    """Page for configuring and running regression training jobs.
+    """Configure and run a training job.
 
-    Images are never routed through ``main_window`` -- this page is fully
-    self-contained: the user loads a
-    CSV and picks an image folder directly here, ``RegressionDataset``
-    handles filename matching/splitting, and training runs on a QThread
-    with ``RegressionTrainer`` (itself a ``QObject``) moved onto that
-    thread; its signals are connected straight to the embedded
-    ``ProgressPanel``, which Qt automatically marshals onto the
-    main thread since the panel lives there.
+    Self-contained: load CSV + image folder here, match/split via
+    ``RegressionDataset``, train on a QThread, and stream progress into
+    the embedded ``ProgressPanel``.
     """
 
     def __init__(self, main_window: Optional["MainWindow"] = None, parent: Optional[QWidget] = None):
@@ -504,6 +480,7 @@ class TrainPage(QWidget):
         self._image_dir: Optional[str] = None
         self._train_dataset: Optional[RegressionDataset] = None
         self._val_dataset: Optional[RegressionDataset] = None
+        self._test_dataset: Optional[RegressionDataset] = None
 
         self._csv_drop_zone: Optional[_CsvDropZone] = None
         self._csv_loaded_label: Optional[QLabel] = None
@@ -521,18 +498,12 @@ class TrainPage(QWidget):
         self._dataset_summary_card: Optional[_DatasetSummaryCard] = None
 
         self._model_name_edit: Optional[QLineEdit] = None
-        self._info_button: Optional[QPushButton] = None
-        self._info_label: Optional[QLabel] = None
+        self._continue_checkbox: Optional[QCheckBox] = None
+        self._continue_combo: Optional[QComboBox] = None
+        self._architecture_combo: Optional[QComboBox] = None
+        self._split_mode_combo: Optional[QComboBox] = None
+        self._strategy_note: Optional[QLabel] = None
         self._epochs_spin: Optional[QSpinBox] = None
-        self._batch_size_combo: Optional[QComboBox] = None
-        self._lr_combo: Optional[QComboBox] = None
-        self._optimizer_combo: Optional[QComboBox] = None
-        self._weight_decay_spin: Optional[QDoubleSpinBox] = None
-        self._val_split_slider: Optional[QSlider] = None
-        self._val_split_label: Optional[QLabel] = None
-        self._pretrained_checkbox: Optional[QCheckBox] = None
-        self._normalise_checkbox: Optional[QCheckBox] = None
-        self._patience_spin: Optional[QSpinBox] = None
         self._start_button: Optional[QPushButton] = None
         self._stop_button: Optional[QPushButton] = None
         self._status_label: Optional[QLabel] = None
@@ -545,6 +516,8 @@ class TrainPage(QWidget):
         self._thread: Optional[QThread] = None
         self._trainer: Optional[RegressionTrainer] = None
         self._pending_model_name: Optional[str] = None
+        self._pending_train_config: Optional[Dict] = None
+        self._parent_model_meta: Optional[Dict] = None
 
         self._shortcut_bindings: List[tuple] = []
         self._tab_order_applied = False
@@ -556,8 +529,8 @@ class TrainPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(32, 28, 32, 24)
-        root.setSpacing(18)
+        root.setContentsMargins(*PAGE_MARGINS)
+        root.setSpacing(PAGE_SPACING)
 
         root.addLayout(self._build_header())
 
@@ -579,21 +552,16 @@ class TrainPage(QWidget):
         root.addWidget(scroll, 1)
 
     def _apply_tab_order(self) -> None:
-        """Chain focus order top-to-bottom through the left panel, then the right."""
+        """Focus order: left panel top-to-bottom, then right panel."""
         chain = [
             self._csv_drop_zone.browse_button if self._csv_drop_zone else None,
             self._select_folder_button,
             self._model_name_edit,
-            self._info_button,
+            self._continue_checkbox,
+            self._continue_combo,
+            self._architecture_combo,
+            self._split_mode_combo,
             self._epochs_spin,
-            self._batch_size_combo,
-            self._lr_combo,
-            self._optimizer_combo,
-            self._weight_decay_spin,
-            self._val_split_slider,
-            self._patience_spin,
-            self._pretrained_checkbox,
-            self._normalise_checkbox,
             self._start_button,
             self._stop_button,
         ]
@@ -610,8 +578,9 @@ class TrainPage(QWidget):
         header.addWidget(title)
 
         subtitle = QLabel(
-            "Load your labelled CSV/Excel file and image folder, configure settings, and "
-            "train a model to predict Water, Solids, and Bitumen content."
+            "Load labelled froth photos and train a model for Water, Solids, and Bitumen. "
+            "The baseline CNN (from scratch) is the default; ImageNet transfer is optional. "
+            "You can also continue a saved model on a new dataset."
         )
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
@@ -621,7 +590,7 @@ class TrainPage(QWidget):
 
     def _make_section_frame(self, title: str):
         frame = QFrame()
-        frame.setStyleSheet(f"QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}")
+        frame.setStyleSheet(card_qss())
 
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(16, 14, 16, 14)
@@ -634,14 +603,6 @@ class TrainPage(QWidget):
         layout.addWidget(title_label)
 
         return frame, layout
-
-    def _secondary_button_style(self) -> str:
-        return (
-            f"QPushButton {{ background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};"
-            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 8px 12px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: #2A2E36; }}"
-            f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid #2A2D34; }}"
-        )
 
     # -- Left panel: CSV / folder / dataset summary --------------------------
 
@@ -665,7 +626,7 @@ class TrainPage(QWidget):
         return container
 
     def _build_csv_section(self) -> QFrame:
-        section, layout = self._make_section_frame("Step 1 \u2014 Load CSV / Excel File")
+        section, layout = self._make_section_frame("Step 1 \u2014 Load labels")
 
         self._csv_drop_zone = _CsvDropZone()
         self._csv_drop_zone.file_selected.connect(self._on_csv_selected)
@@ -741,12 +702,12 @@ class TrainPage(QWidget):
         form.addRow(label, value)
 
     def _build_folder_section(self) -> QFrame:
-        section, layout = self._make_section_frame("Step 2 \u2014 Select Image Folder")
+        section, layout = self._make_section_frame("Step 2 \u2014 Image folder")
 
         self._select_folder_button = QPushButton("Select Folder")
         self._select_folder_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._select_folder_button.setStyleSheet(self._secondary_button_style())
-        self._select_folder_button.setToolTip(shortcut_tooltip("Select the folder containing your images", "F"))
+        self._select_folder_button.setStyleSheet(secondary_button_qss())
+        self._select_folder_button.setToolTip(shortcut_tooltip("Pick the folder with your images", "F"))
         self._select_folder_button.clicked.connect(self._on_select_folder)
         layout.addWidget(self._select_folder_button)
         self._shortcut_bindings.append((self._select_folder_button, "F"))
@@ -770,12 +731,12 @@ class TrainPage(QWidget):
         return section
 
     def _build_dataset_summary_section(self) -> QFrame:
-        section, layout = self._make_section_frame("Step 3 \u2014 Dataset Summary")
+        section, layout = self._make_section_frame("Step 3 \u2014 Dataset summary")
         self._dataset_summary_card = _DatasetSummaryCard()
         layout.addWidget(self._dataset_summary_card)
         return section
 
-    # -- Right panel: model settings & hyperparameters ------------------------
+    # -- Right panel: model settings & training --------------------------------
 
     def _build_right_panel(self) -> QWidget:
         container = QWidget()
@@ -786,16 +747,13 @@ class TrainPage(QWidget):
         layout.setSpacing(16)
 
         layout.addWidget(self._build_model_settings_section())
-        layout.addWidget(self._build_hyperparams_section())
+        layout.addWidget(self._build_strategy_section())
 
         self._start_button = QPushButton("Start Training")
         self._start_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._start_button.setFixedHeight(48)
         self._start_button.setStyleSheet(
-            f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 700;"
-            f"font-size: 14px; border: none; border-radius: 6px; }}"
-            f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
-            f"QPushButton:disabled {{ background-color: #4A4230; color: #8B8168; }}"
+            accent_button_qss(extra="font-weight: 700; font-size: 14px; padding: 0px;")
         )
         self._start_button.clicked.connect(self._on_start_training)
         layout.addWidget(self._start_button)
@@ -804,13 +762,8 @@ class TrainPage(QWidget):
         self._stop_button = QPushButton("Stop Training")
         self._stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._stop_button.setFixedHeight(38)
-        self._stop_button.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {DANGER_COLOR}; font-weight: 600;"
-            f"border: 1px solid {DANGER_COLOR}; border-radius: 6px; }}"
-            f"QPushButton:hover {{ background-color: {DANGER_HOVER_BG}; }}"
-            f"QPushButton:disabled {{ color: #6B5050; border: 1px solid #4A3838; }}"
-        )
-        self._stop_button.setToolTip(shortcut_tooltip("Stop the current training run", "O"))
+        self._stop_button.setStyleSheet(danger_outline_button_qss())
+        self._stop_button.setToolTip(shortcut_tooltip("Stop this training run", "O"))
         self._stop_button.clicked.connect(self._on_stop_training)
         self._stop_button.setVisible(False)
         layout.addWidget(self._stop_button)
@@ -818,7 +771,7 @@ class TrainPage(QWidget):
 
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
-        self._status_label.setStyleSheet("color: #F27C7C; font-size: 12px; background: transparent;")
+        self._status_label.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 12px; background: transparent;")
         self._status_label.setVisible(False)
         layout.addWidget(self._status_label)
 
@@ -844,148 +797,89 @@ class TrainPage(QWidget):
 
         layout.addLayout(form)
 
-        section.setStyleSheet(
-            f"""
-            QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}
-            QLineEdit {{
-                background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
-                border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 6px 8px;
-            }}
-            """
+        self._continue_checkbox = QCheckBox("Continue training a saved model")
+        self._continue_checkbox.setToolTip(
+            "Load an existing checkpoint and keep training it on the dataset below. "
+            "Saves a new model; the original is left unchanged."
         )
-        return section
+        self._continue_checkbox.toggled.connect(self._on_continue_toggled)
+        layout.addWidget(self._continue_checkbox)
 
-    def _build_hyperparams_section(self) -> QFrame:
-        section = QFrame()
-
-        outer = QVBoxLayout(section)
-        outer.setContentsMargins(18, 16, 18, 16)
-        outer.setSpacing(12)
-
-        header_row = QHBoxLayout()
-        header_row.setSpacing(6)
-
-        title = QLabel("Hyperparameters")
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 14px; font-weight: 600; background: transparent;")
-        header_row.addWidget(title)
-
-        self._info_button = QPushButton()
-        self._info_button.setIcon(_build_info_icon(TEXT_SECONDARY))
-        self._info_button.setIconSize(QSize(14, 14))
-        self._info_button.setFixedSize(22, 22)
-        self._info_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._info_button.setToolTip("What do these parameters mean?")
-        self._info_button.setStyleSheet(
-            "QPushButton { background: transparent; border: none; border-radius: 11px; }"
-            "QPushButton:hover { background-color: rgba(139, 144, 154, 40); }"
-        )
-        self._info_button.clicked.connect(self._toggle_hyperparam_info)
-        header_row.addWidget(self._info_button)
-        header_row.addStretch(1)
-        outer.addLayout(header_row)
-
-        self._info_label = QLabel(HYPERPARAM_INFO_TEXT)
-        self._info_label.setWordWrap(True)
-        self._info_label.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 11px; background-color: {BACKGROUND_COLOR};"
-            f"border-radius: 6px; padding: 10px;"
-        )
-        self._info_label.setVisible(False)
-        outer.addWidget(self._info_label)
-
-        form = QFormLayout()
-        form.setSpacing(10)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-
-        self._epochs_spin = QSpinBox()
-        self._epochs_spin.setRange(1, 200)
-        self._epochs_spin.setValue(30)
-        self._epochs_spin.setToolTip("How many times the model sees your full dataset.")
-        self._add_form_row(form, "Epochs (1\u2013200)", self._epochs_spin)
-
-        self._batch_size_combo = QComboBox()
-        self._batch_size_combo.addItems([str(v) for v in BATCH_SIZE_OPTIONS])
-        self._batch_size_combo.setCurrentText("32")
-        self._batch_size_combo.setToolTip("How many images processed at once. 32 works well for most computers.")
-        self._add_form_row(form, "Batch Size", self._batch_size_combo)
-
-        self._lr_combo = QComboBox()
-        self._lr_combo.addItems([str(v) for v in LEARNING_RATE_OPTIONS])
-        self._lr_combo.setCurrentText("0.001")
-        self._lr_combo.setToolTip("How fast the model adjusts. 0.001 is a safe starting point.")
-        self._add_form_row(form, "Learning Rate", self._lr_combo)
-
-        self._optimizer_combo = QComboBox()
-        self._optimizer_combo.addItems(list(OPTIMIZER_OPTIONS))
-        self._optimizer_combo.setCurrentText("Adam")
-        self._optimizer_combo.setToolTip("Adam works well for most cases.")
-        self._add_form_row(form, "Optimizer", self._optimizer_combo)
-
-        self._weight_decay_spin = QDoubleSpinBox()
-        self._weight_decay_spin.setRange(0.0, 0.1)
-        self._weight_decay_spin.setSingleStep(0.0001)
-        self._weight_decay_spin.setDecimals(4)
-        self._weight_decay_spin.setValue(0.0001)
-        self._weight_decay_spin.setToolTip(
-            "Helps prevent the model from memorising your training images. Leave at default."
-        )
-        self._add_form_row(form, "Weight Decay (0\u20130.1)", self._weight_decay_spin)
-
-        val_split_row = QWidget()
-        val_split_layout = QHBoxLayout(val_split_row)
-        val_split_layout.setContentsMargins(0, 0, 0, 0)
-        val_split_layout.setSpacing(10)
-        self._val_split_slider = QSlider(Qt.Orientation.Horizontal)
-        self._val_split_slider.setRange(10, 40)
-        self._val_split_slider.setValue(20)
-        self._val_split_slider.setToolTip("Images held back to test the model during training. 20% is recommended.")
-        self._val_split_label = QLabel("20%")
-        self._val_split_label.setFixedWidth(36)
-        self._val_split_label.setStyleSheet(f"color: {TEXT_PRIMARY}; background: transparent;")
-        self._val_split_slider.valueChanged.connect(self._on_val_split_changed)
-        val_split_layout.addWidget(self._val_split_slider, 1)
-        val_split_layout.addWidget(self._val_split_label)
-        self._add_form_row(form, "Validation Split (10\u201340%)", val_split_row)
-
-        self._patience_spin = QSpinBox()
-        self._patience_spin.setRange(1, 20)
-        self._patience_spin.setValue(5)
-        self._patience_spin.setToolTip("Training stops if results stop improving for this many epochs in a row.")
-        self._add_form_row(form, "Early Stopping Patience (1\u201320)", self._patience_spin)
-
-        outer.addLayout(form)
-
-        self._pretrained_checkbox = QCheckBox("Use Pretrained Backbone")
-        self._pretrained_checkbox.setChecked(True)
-        self._pretrained_checkbox.setToolTip(
-            "Starts from a model pre-trained on millions of images. Almost always improves results."
-        )
-        outer.addWidget(self._pretrained_checkbox)
-
-        self._normalise_checkbox = QCheckBox("Normalise Targets")
-        self._normalise_checkbox.setChecked(True)
-        self._normalise_checkbox.setToolTip(
-            "Scales Water, Solids, and Bitumen to a common range so the model learns all three equally."
-        )
-        outer.addWidget(self._normalise_checkbox)
+        self._continue_combo = QComboBox()
+        self._continue_combo.setToolTip("Which saved model to continue from.")
+        self._continue_combo.currentIndexChanged.connect(self._on_continue_model_changed)
+        self._continue_combo.setVisible(False)
+        layout.addWidget(self._continue_combo)
 
         section.setStyleSheet(
             f"""
             QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}
-            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
+            QLineEdit, QComboBox {{
                 background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
                 border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 6px 8px;
             }}
             QComboBox::drop-down {{ border: none; width: 20px; }}
             QCheckBox {{ color: {TEXT_PRIMARY}; font-size: 12px; background: transparent; }}
-            QSlider::groove:horizontal {{ background: {BACKGROUND_COLOR}; height: 6px; border-radius: 3px; }}
-            QSlider::sub-page:horizontal {{ background: {ACCENT_COLOR}; border-radius: 3px; }}
-            QSlider::handle:horizontal {{
-                background: {ACCENT_COLOR}; width: 14px; margin: -5px 0; border-radius: 7px;
-            }}
             """
         )
+        return section
 
+    def _build_strategy_section(self) -> QFrame:
+        section, layout = self._make_section_frame("Training")
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self._architecture_combo = QComboBox()
+        for key in TRAINABLE_ARCHITECTURES:
+            self._architecture_combo.addItem(ARCHITECTURE_LABELS[key], key)
+        self._architecture_combo.setCurrentIndex(0)
+        self._architecture_combo.setToolTip(
+            "Baseline CNN from scratch is the most robust default for froth images."
+        )
+        self._architecture_combo.currentIndexChanged.connect(self._on_strategy_changed)
+        self._add_form_row(form, "Architecture", self._architecture_combo)
+
+        self._split_mode_combo = QComboBox()
+        self._split_mode_combo.addItem("Random split", "random")
+        self._split_mode_combo.addItem("Experiment hold-out", "experiment")
+        self._split_mode_combo.setToolTip(
+            "Random split interpolates within familiar runs. Experiment hold-out "
+            "keeps entire flotation campaigns out of training."
+        )
+        self._split_mode_combo.currentIndexChanged.connect(self._on_split_mode_changed)
+        self._add_form_row(form, "Split", self._split_mode_combo)
+
+        self._epochs_spin = QSpinBox()
+        self._epochs_spin.setRange(1, 200)
+        self._epochs_spin.setValue(100)
+        self._epochs_spin.setToolTip(
+            "How many full passes over your data. Training stops sooner if validation stalls."
+        )
+        self._add_form_row(form, "Epochs", self._epochs_spin)
+
+        layout.addLayout(form)
+
+        self._strategy_note = QLabel("")
+        self._strategy_note.setWordWrap(True)
+        self._strategy_note.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px; background-color: {BACKGROUND_COLOR};"
+            f"border-radius: 6px; padding: 8px;"
+        )
+        layout.addWidget(self._strategy_note)
+
+        section.setStyleSheet(
+            f"""
+            QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}
+            QComboBox, QSpinBox {{
+                background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
+                border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 6px 8px;
+            }}
+            QComboBox::drop-down {{ border: none; width: 20px; }}
+            """
+        )
+        self._on_strategy_changed()
         return section
 
     def _add_form_row(self, form: QFormLayout, label_text: str, field: QWidget) -> None:
@@ -993,8 +887,154 @@ class TrainPage(QWidget):
         label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;")
         form.addRow(label, field)
 
-    def _toggle_hyperparam_info(self) -> None:
-        self._info_label.setVisible(not self._info_label.isVisible())
+    def _current_architecture(self) -> str:
+        if self._architecture_combo is None:
+            return "baseline"
+        data = self._architecture_combo.currentData()
+        return str(data) if data else "baseline"
+
+    def _current_adaptation(self) -> str:
+        return "scratch" if self._current_architecture() == "baseline" else "ft"
+
+    def _current_head(self) -> str:
+        if self._parent_model_meta:
+            return str(self._parent_model_meta.get("head") or "native")
+        return "native"
+
+    def _is_transfer_architecture(self, architecture: Optional[str] = None) -> bool:
+        architecture = architecture or self._current_architecture()
+        return architecture in {"resnet50", "vgg16", "resnet18"}
+
+
+    def _current_split_mode(self) -> str:
+        if self._split_mode_combo is None:
+            return "random"
+        data = self._split_mode_combo.currentData()
+        return str(data) if data else "random"
+
+    def _on_split_mode_changed(self, _index: int = 0) -> None:
+        self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
+
+    def _on_continue_toggled(self, checked: bool) -> None:
+        if self._continue_combo is not None:
+            self._continue_combo.setVisible(checked)
+        if checked:
+            self._refresh_continue_combo()
+            self._on_continue_model_changed()
+        else:
+            self._parent_model_meta = None
+            if self._architecture_combo is not None:
+                self._architecture_combo.setEnabled(True)
+                # Drop a legacy-only item if it was added for continue-training.
+                self._restore_trainable_architectures()
+        self._on_strategy_changed()
+        self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
+
+    def _restore_trainable_architectures(self) -> None:
+        if self._architecture_combo is None:
+            return
+        current = self._current_architecture()
+        self._architecture_combo.blockSignals(True)
+        self._architecture_combo.clear()
+        for key in TRAINABLE_ARCHITECTURES:
+            self._architecture_combo.addItem(ARCHITECTURE_LABELS[key], key)
+        index = self._architecture_combo.findData(current if current in TRAINABLE_ARCHITECTURES else "baseline")
+        self._architecture_combo.setCurrentIndex(max(0, index))
+        self._architecture_combo.blockSignals(False)
+
+    def _refresh_continue_combo(self) -> None:
+        if self._continue_combo is None:
+            return
+        previous_path = self._continue_combo.currentData()
+        self._continue_combo.blockSignals(True)
+        self._continue_combo.clear()
+        try:
+            models = list_saved_models(MODELS_DIR)
+        except OSError:
+            models = []
+        if not models:
+            self._continue_combo.addItem("No saved models yet", None)
+        else:
+            for entry in models:
+                name = entry.get("name") or "Untitled"
+                created = (entry.get("created_at") or "")[:10]
+                label = f"{name} ({created})" if created else name
+                self._continue_combo.addItem(label, entry)
+        if previous_path:
+            for index in range(self._continue_combo.count()):
+                data = self._continue_combo.itemData(index)
+                if isinstance(data, dict) and data.get("model_path") == previous_path:
+                    self._continue_combo.setCurrentIndex(index)
+                    break
+        self._continue_combo.blockSignals(False)
+
+    def _on_continue_model_changed(self, _index: int = 0) -> None:
+        data = self._continue_combo.currentData() if self._continue_combo is not None else None
+        if not isinstance(data, dict):
+            self._parent_model_meta = None
+            self._on_strategy_changed()
+            return
+        self._parent_model_meta = data
+        architecture = data.get("architecture", "resnet18")
+        if self._architecture_combo is not None:
+            self._architecture_combo.blockSignals(True)
+            if self._architecture_combo.findData(architecture) < 0:
+                self._architecture_combo.addItem(
+                    ARCHITECTURE_LABELS.get(architecture, architecture), architecture
+                )
+            index = self._architecture_combo.findData(architecture)
+            if index >= 0:
+                self._architecture_combo.setCurrentIndex(index)
+            self._architecture_combo.setEnabled(False)
+            self._architecture_combo.blockSignals(False)
+        if self._model_name_edit is not None and not self._model_name_edit.text().strip():
+            base = data.get("name") or "model"
+            self._model_name_edit.setText(f"{base} retrained")
+        self._on_strategy_changed()
+        self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
+
+    def prepare_retrain(self, metadata: Dict) -> None:
+        """Pre-select a library model so the user can continue it on a new dataset."""
+        if self._continue_checkbox is None:
+            return
+        self._refresh_continue_combo()
+        self._continue_checkbox.setChecked(True)
+        target_path = metadata.get("model_path")
+        if self._continue_combo is not None and target_path:
+            for index in range(self._continue_combo.count()):
+                data = self._continue_combo.itemData(index)
+                if isinstance(data, dict) and data.get("model_path") == target_path:
+                    self._continue_combo.setCurrentIndex(index)
+                    break
+            else:
+                self._continue_combo.addItem(metadata.get("name") or "Saved model", metadata)
+                self._continue_combo.setCurrentIndex(self._continue_combo.count() - 1)
+        base = metadata.get("name") or "model"
+        if self._model_name_edit is not None:
+            self._model_name_edit.setText(f"{base} retrained")
+        self._on_continue_model_changed()
+
+    def _on_strategy_changed(self, _index: int = 0) -> None:
+        is_baseline = self._current_architecture() == "baseline"
+        continuing = bool(self._continue_checkbox is not None and self._continue_checkbox.isChecked())
+
+        if self._strategy_note is not None:
+            if continuing:
+                parent = (self._parent_model_meta or {}).get("name") or "the selected model"
+                self._strategy_note.setText(
+                    f"Continuing \u201c{parent}\u201d on the dataset below. Architecture "
+                    "stays locked so weights load correctly. A new model file is saved; the original is kept."
+                )
+            elif is_baseline:
+                self._strategy_note.setText(
+                    "Baseline CNN trained from scratch is the most robust default for froth images. "
+                    "Prefer an experiment hold-out split before relying on a model in a new campaign."
+                )
+            else:
+                self._strategy_note.setText(
+                    "ImageNet transfer is optional and mainly helps Solids. Fine-tuning is applied "
+                    "automatically. Compare against the baseline under an experiment hold-out before deploying."
+                )
 
     # -- CSV / folder / dataset summary --------------------------------------
 
@@ -1004,6 +1044,9 @@ class TrainPage(QWidget):
         if not self._tab_order_applied:
             self._apply_tab_order()
             self._tab_order_applied = True
+        if self._continue_checkbox is not None and self._continue_checkbox.isChecked():
+            self._refresh_continue_combo()
+        self._sync_imported_images()
 
     def hideEvent(self, event) -> None:  # noqa: D401 - Qt override
         super().hideEvent(event)
@@ -1013,7 +1056,7 @@ class TrainPage(QWidget):
         try:
             df = read_labels_file(path)
         except Exception as exc:  # noqa: BLE001 - surface any parse failure to the user
-            self._show_status_error(f"Could not read label file: {exc}")
+            self._show_status_error(f"Couldn't read label file: {exc}")
             return
 
         self._csv_path = path
@@ -1061,7 +1104,10 @@ class TrainPage(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
         if not folder:
             return
+        self._apply_image_folder(folder)
 
+    def _apply_image_folder(self, folder: str) -> bool:
+        """Set Step 2 from a folder path. Returns False if the folder can't be read."""
         try:
             image_count = sum(
                 1
@@ -1069,56 +1115,105 @@ class TrainPage(QWidget):
                 if entry.is_file() and entry.suffix.lower() in RegressionDataset.EXTENSION_CANDIDATES
             )
         except OSError as exc:
-            self._show_status_error(f"Could not read folder: {exc}")
-            return
+            self._show_status_error(f"Couldn't read folder: {exc}")
+            return False
 
         self._image_dir = folder
         self._folder_path_label.setText(folder)
         self._folder_path_label.setVisible(True)
         count_word = "image" if image_count == 1 else "images"
-        self._folder_count_label.setText(f"{image_count} {count_word} found in this folder.")
+        self._folder_count_label.setText(f"{image_count} {count_word} in this folder.")
         self._folder_count_label.setVisible(True)
 
         self._maybe_rebuild_dataset_summary()
         self._update_start_button_state()
+        return True
 
-    def _on_val_split_changed(self, value: int) -> None:
-        self._val_split_label.setText(f"{value}%")
-        self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
+    @staticmethod
+    def _folder_from_imported_paths(paths: List[str]) -> Optional[str]:
+        """Pick the image folder to use after Import → Send to Training.
+
+        Uses the most common parent directory, ignoring the edit-cache folder
+        when originals are still present.
+        """
+        parents: List[str] = []
+        for path in paths:
+            parent = Path(path).expanduser().resolve().parent
+            if parent.is_dir():
+                parents.append(str(parent))
+        if not parents:
+            return None
+        counts = Counter(parents)
+        preferred = {folder: count for folder, count in counts.items() if Path(folder).name != _EDIT_CACHE_DIR_NAME}
+        pool = preferred or dict(counts)
+        return max(pool, key=pool.get)
+
+    def _sync_imported_images(self) -> None:
+        """Apply the folder from Import's Send to Training payload, once."""
+        if self.main_window is None:
+            return
+        incoming = getattr(self.main_window, "training_images", None)
+        if not incoming:
+            return
+        self.main_window.training_images = None
+
+        if self._thread is not None:
+            self._show_status_error("Training is already running, so the imported folder wasn't applied.")
+            return
+
+        paths = [str(entry.get("path")) for entry in incoming if entry.get("path")]
+        folder = self._folder_from_imported_paths(paths)
+        if not folder:
+            self._show_status_error("Couldn't use the imported images — no readable folder.")
+            return
+        self._apply_image_folder(folder)
+
+    def _dataset_kwargs(self, *, normalise: bool = True) -> Dict:
+        image_size = IMAGE_SIZE
+        legacy_crop = False
+        if self._continue_checkbox is not None and self._continue_checkbox.isChecked() and self._parent_model_meta:
+            image_size = image_size_from_metadata(self._parent_model_meta)
+            legacy_crop = is_legacy_resnet18(self._parent_model_meta)
+        return {
+            "csv_path": self._csv_path,
+            "image_dir": self._image_dir,
+            "val_fraction": VAL_FRACTION,
+            "test_fraction": TEST_FRACTION,
+            "normalise": normalise,
+            "seed": 42,
+            "split_mode": self._current_split_mode(),
+            "image_size": image_size,
+            "legacy_crop": legacy_crop,
+        }
 
     def _maybe_rebuild_dataset_summary(self) -> None:
-        """Re-run filename matching/splitting and refresh the Step 2/3 summaries.
-
-        Called after the CSV or folder is (re)selected, and again (debounced)
-        whenever the Validation Split slider moves, so the displayed
-        train/val counts always reflect the current split percentage.
-        """
+        """Re-match filenames and refresh Step 2/3 after CSV/folder/split changes."""
         if self._csv_dataframe is None or not self._image_dir:
             self._match_card.setVisible(False)
             self._step3_frame.setVisible(False)
             self._train_dataset = None
             self._val_dataset = None
+            self._test_dataset = None
             return
 
-        val_fraction = self._val_split_slider.value() / 100.0
+        kwargs = self._dataset_kwargs(normalise=True)
         try:
-            train_dataset = RegressionDataset(
-                self._csv_path, self._image_dir, split="train", val_fraction=val_fraction, normalise=True, seed=42
-            )
-            val_dataset = RegressionDataset(
-                self._csv_path, self._image_dir, split="val", val_fraction=val_fraction, normalise=True, seed=42
-            )
+            train_dataset = RegressionDataset(split="train", **kwargs)
+            val_dataset = RegressionDataset(split="val", **kwargs)
+            test_dataset = RegressionDataset(split="test", **kwargs)
         except Exception as exc:  # noqa: BLE001 - matching can fail in many ways (bad path, bad CSV, etc.)
-            self._show_status_error(f"Could not match images: {exc}")
+            self._show_status_error(f"Couldn't match images: {exc}")
             self._match_card.setVisible(False)
             self._step3_frame.setVisible(False)
             self._train_dataset = None
             self._val_dataset = None
+            self._test_dataset = None
             return
 
         self._clear_status()
         self._train_dataset = train_dataset
         self._val_dataset = val_dataset
+        self._test_dataset = test_dataset
 
         match_summary = train_dataset.get_match_summary()
         self._match_card.update_summary(match_summary)
@@ -1131,9 +1226,14 @@ class TrainPage(QWidget):
                 total=match_summary["matched"],
                 train_count=len(train_dataset),
                 val_count=len(val_dataset),
-                val_fraction=val_fraction,
+                test_count=len(test_dataset),
+                val_fraction=kwargs["val_fraction"],
+                test_fraction=kwargs["test_fraction"],
                 output_ranges=output_ranges,
                 pan_distribution=pan_distribution,
+                split_mode=train_dataset.split_mode,
+                split_campaigns=train_dataset.split_campaigns,
+                split_fallback_reason=train_dataset.split_fallback_reason,
             )
             self._step3_frame.setVisible(True)
         else:
@@ -1173,9 +1273,9 @@ class TrainPage(QWidget):
         )
         self._start_button.setEnabled(ready)
         if ready:
-            self._start_button.setToolTip(shortcut_tooltip("Start training the model", "S"))
+            self._start_button.setToolTip(shortcut_tooltip("Start training", "S"))
         else:
-            self._start_button.setToolTip("Complete Steps 1\u20133 first")
+            self._start_button.setToolTip("Finish Steps 1\u20133 first")
 
     # -- Status helpers ---------------------------------------------------
 
@@ -1197,52 +1297,47 @@ class TrainPage(QWidget):
 
         model_name = self._model_name_edit.text().strip()
         if not model_name:
-            self._show_status_error("Please enter a model name.")
+            self._show_status_error("Enter a model name.")
             return
         if any(character in model_name for character in ("/", "\\")):
-            self._show_status_error("Model name cannot contain \u201c/\u201d or \u201c\\\u201d.")
+            self._show_status_error("Model name can't contain \u201c/\u201d or \u201c\\\u201d.")
             return
 
         if self._csv_dataframe is None or self._image_dir is None:
-            self._show_status_error("Complete Steps 1\u20133 before starting training.")
+            self._show_status_error("Finish Steps 1\u20133 before starting.")
             return
 
-        val_fraction = self._val_split_slider.value() / 100.0
-        normalise_targets = self._normalise_checkbox.isChecked()
+        continuing = bool(self._continue_checkbox is not None and self._continue_checkbox.isChecked())
+        parent_meta = self._parent_model_meta if continuing else None
+        if continuing and not isinstance(parent_meta, dict):
+            self._show_status_error("Choose a saved model to continue training.")
+            return
+        if continuing:
+            parent_path = parent_meta.get("model_path")
+            if not parent_path or not Path(parent_path).exists():
+                self._show_status_error("Couldn't find the saved model weights to continue from.")
+                return
+
+        kwargs = self._dataset_kwargs(normalise=True)
 
         try:
-            train_dataset = RegressionDataset(
-                self._csv_path,
-                self._image_dir,
-                split="train",
-                val_fraction=val_fraction,
-                normalise=normalise_targets,
-                seed=42,
-            )
-            val_dataset = RegressionDataset(
-                self._csv_path,
-                self._image_dir,
-                split="val",
-                val_fraction=val_fraction,
-                normalise=normalise_targets,
-                seed=42,
-            )
+            train_dataset = RegressionDataset(split="train", **kwargs)
+            val_dataset = RegressionDataset(split="val", **kwargs)
+            test_dataset = RegressionDataset(split="test", **kwargs)
         except Exception as exc:  # noqa: BLE001 - surface any dataset-build failure to the user
-            self._show_status_error(f"Could not prepare dataset: {exc}")
+            self._show_status_error(f"Couldn't prepare dataset: {exc}")
             return
 
         if len(train_dataset) == 0 or len(val_dataset) == 0:
             self._show_status_error(
-                "Not enough matched images to train. Add more images, or check your CSV filenames."
+                "Not enough matched images. Add more, or check CSV filenames."
             )
             return
 
-        batch_size = int(self._batch_size_combo.currentText())
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Stream images from disk via background worker processes rather than
-        # holding every decoded image in RAM -- see _default_num_workers for
-        # why this scales to very large datasets.
+        # Load images from disk in worker processes instead of keeping
+        # everything in RAM — see _default_num_workers.
         num_workers = _default_num_workers()
         loader_kwargs = {"num_workers": num_workers}
         if num_workers > 0:
@@ -1250,26 +1345,65 @@ class TrainPage(QWidget):
         if device.type == "cuda":
             loader_kwargs["pin_memory"] = True
 
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs)
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, **loader_kwargs)
+        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, **loader_kwargs)
+        test_loader = None
+        if len(test_dataset) > 0:
+            test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, **loader_kwargs)
 
-        model = BitumenRegressor(pretrained=self._pretrained_checkbox.isChecked())
+        architecture = self._current_architecture()
+        head = self._current_head()
+        adaptation = self._current_adaptation()
+        pretrained = self._is_transfer_architecture(architecture) and not continuing
+
+        try:
+            if continuing:
+                architecture = parent_meta.get("architecture", architecture)
+                head = parent_meta.get("head", head)
+                adaptation = "scratch" if architecture == "baseline" else "ft"
+                model = BitumenRegressor.from_checkpoint(parent_meta["model_path"], parent_meta, device)
+                model.train()
+            else:
+                model = BitumenRegressor(architecture=architecture, pretrained=pretrained, head=head)
+        except Exception as exc:  # noqa: BLE001 - architecture / checkpoint mismatches
+            self._show_status_error(f"Couldn't load model: {exc}")
+            return
+
+        freeze_epochs = 0 if architecture == "baseline" else TRANSFER_FREEZE_EPOCHS
 
         trainer = RegressionTrainer(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
             device=device,
-            learning_rate=float(self._lr_combo.currentText()),
+            learning_rate=LEARNING_RATE,
             num_epochs=self._epochs_spin.value(),
-            optimizer_name=self._optimizer_combo.currentText(),
-            weight_decay=self._weight_decay_spin.value(),
+            optimizer_name=OPTIMIZER_NAME,
+            weight_decay=WEIGHT_DECAY,
             output_stats=train_dataset.get_output_stats(),
-            normalise_targets=normalise_targets,
-            patience=self._patience_spin.value(),
+            normalise_targets=True,
+            patience=EARLY_STOPPING_PATIENCE,
+            test_loader=test_loader,
+            use_differential_lrs=self._is_transfer_architecture(architecture),
+            use_cosine_schedule=True,
+            freeze_backbone_epochs=freeze_epochs,
+            sum_penalty_weight=SUM_PENALTY_WEIGHT,
+            adaptation=adaptation,
         )
 
+        image_size = kwargs["image_size"]
         self._pending_model_name = model_name
+        self._pending_train_config = {
+            "architecture": architecture,
+            "head": head,
+            "adaptation": adaptation,
+            "pretrained": pretrained,
+            "image_size": image_size,
+            "split_mode": train_dataset.split_mode,
+            "continued_training": continuing,
+            "parent_model": (parent_meta or {}).get("name") if continuing else None,
+            "parent_model_path": (parent_meta or {}).get("model_path") if continuing else None,
+        }
         self._launch_training_thread(trainer)
 
     def _launch_training_thread(self, trainer: RegressionTrainer) -> None:
@@ -1308,18 +1442,23 @@ class TrainPage(QWidget):
                 name=self._pending_model_name,
                 output_stats=result.output_stats,
                 result=result,
-                save_dir=_MODELS_DIR,
+                save_dir=MODELS_DIR,
+                extra_metadata=self._pending_train_config,
             )
         except OSError as exc:
-            self._progress_panel.append_log(f"Failed to save model: {exc}")
-            self._show_status_error(f"Failed to save model: {exc}")
+            self._progress_panel.append_log(f"Couldn't save model: {exc}")
+            self._show_status_error(f"Couldn't save model: {exc}")
             self._set_training_ui_active(False)
             return
 
         if result.stopped_early:
-            self._progress_panel.show_early_stopped_banner(result.final_epoch, result.best_val_mae)
+            self._progress_panel.show_early_stopped_banner(
+                result.final_epoch, result.best_val_mae, test_mae=result.test_mae
+            )
         else:
-            self._progress_panel.show_completion(self._pending_model_name, result.best_val_mae)
+            self._progress_panel.show_completion(
+                self._pending_model_name, result.best_val_mae, test_mae=result.test_mae
+            )
 
         if self.main_window is not None:
             try:
@@ -1344,7 +1483,7 @@ class TrainPage(QWidget):
     def _on_stop_training(self) -> None:
         if self._trainer is not None:
             self._trainer.request_stop()
-            self._progress_panel.append_log("Stop requested\u2026")
+            self._progress_panel.append_log("Stopping\u2026")
         self._stop_button.setEnabled(False)
 
     def _set_training_ui_active(self, active: bool) -> None:
@@ -1353,40 +1492,26 @@ class TrainPage(QWidget):
 
         if active:
             self._start_button.setEnabled(False)
-            self._start_button.setToolTip("Training in progress\u2026")
+            self._start_button.setToolTip("Training\u2026")
         else:
-            # Re-derive enabled/tooltip from current dataset state rather than
-            # unconditionally re-enabling.
+            # Re-check enabled/tooltip from current dataset state.
             self._update_start_button_state()
+            if self._continue_checkbox is not None and self._continue_checkbox.isChecked():
+                self._on_continue_model_changed()
 
         for widget in (
             self._csv_drop_zone,
             self._select_folder_button,
             self._model_name_edit,
+            self._continue_checkbox,
+            self._continue_combo,
+            self._architecture_combo,
+            self._split_mode_combo,
             self._epochs_spin,
-            self._batch_size_combo,
-            self._lr_combo,
-            self._optimizer_combo,
-            self._weight_decay_spin,
-            self._val_split_slider,
-            self._patience_spin,
-            self._pretrained_checkbox,
-            self._normalise_checkbox,
         ):
             if widget is not None:
                 widget.setEnabled(not active)
 
     def _on_view_library_requested(self) -> None:
-        if self.main_window is None:
-            return
-        stack = getattr(self.main_window, "_stack", None)
-        sidebar = getattr(self.main_window, "_sidebar", None)
-        pages = getattr(self.main_window, "_pages", [])
-
-        target_index = next((i for i, page in enumerate(pages) if isinstance(page, ModelManagerPage)), None)
-        if target_index is None or stack is None:
-            return
-
-        stack.setCurrentIndex(target_index)
-        if sidebar is not None and hasattr(sidebar, "set_active_index"):
-            sidebar.set_active_index(target_index)
+        if self.main_window is not None:
+            self.main_window.navigate_to("library")

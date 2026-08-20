@@ -1,12 +1,8 @@
 """
-Prediction / Grading page (regression).
+Grade Images page.
 
-Provides the UI for running inference with a loaded ``BitumenRegressor``
-against new bitumen sample images and displaying the predicted Water,
-Solids, and Bitumen content -- compared against the training data's
-average/range, a compositional ("sum to ~100%") sanity check, and a
-data-derived "closest Pan grade" indicator -- either for a single selected
-image or as a batch after "Grade All".
+Run the active model on sample photos and show Water / Solids / Bitumen
+predictions, a sum-to-~100% check, and a rough closest Pan grade.
 """
 from __future__ import annotations
 
@@ -48,49 +44,48 @@ from PyQt6.QtWidgets import (
 
 from app.components.image_editor import pil_to_qpixmap
 from app.components.loading_overlay import LoadingOverlay
+from app.constants import IMAGE_EXTENSIONS, OUTPUT_NAMES
 from app.ml.predictor import RegressionPredictor
-from app.pages.model_manager_page import ModelManagerPage
+from app.theme import (
+    ACCENT_COLOR,
+    BACKGROUND_COLOR,
+    BORDER_COLOR,
+    DANGER_COLOR,
+    PAGE_MARGINS,
+    PAGE_SPACING,
+    SUCCESS_COLOR,
+    SURFACE_COLOR,
+    SURFACE_HOVER_COLOR,
+    TEXT_INVERSE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    WATER_LINE_COLOR,
+    accent_button_qss,
+    drop_zone_qss,
+)
 from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
 
 if TYPE_CHECKING:
     from app.main_window import MainWindow
 
-# --------------------------------------------------------------------------
-# Design tokens (kept local so this page has no dependency on MainWindow)
-# --------------------------------------------------------------------------
-
-BACKGROUND_COLOR = "#1A1C20"
-SURFACE_COLOR = "#22252C"
-BORDER_COLOR = "#33373F"
-ACCENT_COLOR = "#E8A838"
-ACCENT_HOVER_COLOR = "#C98A20"
-TEXT_PRIMARY = "#E8E9EC"
-TEXT_SECONDARY = "#8B909A"
-DANGER_COLOR = "#E5484D"
-SUCCESS_COLOR = "#3CB878"
-
 LEFT_PANEL_WIDTH = 340
 THUMB_SIZE = 64
-SUPPORTED_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif")
+SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS
 
-OUTPUT_LABELS = ("Water", "Solids", "Bitumen")
+OUTPUT_LABELS = OUTPUT_NAMES
 
-#: The four Pan grades this app recognises, in increasing order, with their
-#: fixed indicator colours (border/pill colour on the grade card and table).
+#: The four Pan grades we use, with fixed colours for the grade card/table.
 PAN_GRADES = (3, 4, 5, 6)
-PAN_GRADE_COLORS = {3: "#5B9BD5", 4: "#3CB878", 5: "#E8A838", 6: "#E5484D"}
-PAN_GRADE_TEXT_COLORS = {3: "#FFFFFF", 4: "#FFFFFF", 5: "#13151A", 6: "#FFFFFF"}
+PAN_GRADE_COLORS = {3: WATER_LINE_COLOR, 4: SUCCESS_COLOR, 5: ACCENT_COLOR, 6: DANGER_COLOR}
+PAN_GRADE_TEXT_COLORS = {3: "#FFFFFF", 4: "#FFFFFF", 5: TEXT_INVERSE, 6: "#FFFFFF"}
 
-#: A saved model's metadata only stores each output's training mean/std
-#: (see app.ml.dataset.RegressionDataset.get_output_stats), not its literal
-#: min/max -- so both the range bars and the "closest Pan grade" heuristic
-#: below approximate the training range as mean +/- this many std devs,
-#: clamped to the valid 0-100% span.
+#: Metadata only stores mean/std per output, not min/max — so range bars and
+#: closest-Pan-grade use mean +/- this many stds, clamped to 0–100%.
 RANGE_STD_MULTIPLIER = 2.0
 
 
 def _approx_output_range(mean: float, std: float) -> Tuple[float, float]:
-    """Approximate a training output's min/max as mean +/- RANGE_STD_MULTIPLIER*std."""
+    """Rough training min/max: mean +/- RANGE_STD_MULTIPLIER*std."""
     low = max(0.0, mean - RANGE_STD_MULTIPLIER * std)
     high = min(100.0, mean + RANGE_STD_MULTIPLIER * std)
     if high <= low:
@@ -99,12 +94,10 @@ def _approx_output_range(mean: float, std: float) -> Tuple[float, float]:
 
 
 def _closest_pan_grade(bitumen_value: float, bitumen_mean: float, bitumen_std: float) -> int:
-    """Bucket a predicted Bitumen value into one of the four Pan grades.
+    """Map predicted Bitumen into one of the four Pan grades.
 
-    There is no persisted mapping from Bitumen content to Pan grade in a
-    saved model's metadata, so this splits the model's own approximate
-    Bitumen training range into four equal bins (one per grade, low to
-    high) and picks whichever bin the prediction falls into.
+    There's no saved Bitumen→Pan mapping, so we split the model's Bitumen
+    training range into four equal bins and pick which one the prediction lands in.
     """
     low, high = _approx_output_range(bitumen_mean, bitumen_std)
     span = high - low
@@ -115,14 +108,11 @@ def _closest_pan_grade(bitumen_value: float, bitumen_mean: float, bitumen_std: f
 
 
 class _GradingWorker(QObject):
-    """Runs a already-loaded ``RegressionPredictor`` over one or more images on a background QThread.
+    """Run a loaded ``RegressionPredictor`` on one or more images off the UI thread.
 
-    ``MainWindow.set_active_model`` loads the checkpoint into a
-    ``RegressionPredictor`` up front (see its docstring), so this worker's
-    only job is to keep the (potentially slow) inference loop itself off
-    the UI thread; the main thread only touches widget state once results
-    come back via ``finished``. Used for both "Grade This Image" (a
-    single-item list) and "Grade All" (the full queue).
+    The checkpoint is already loaded by ``MainWindow.set_active_model``; this
+    just keeps inference off the main thread. Used for both "Grade This Image"
+    and "Grade All".
     """
 
     finished = pyqtSignal(list, int)  # [(image_id, result_or_None)], failure_count
@@ -135,7 +125,7 @@ class _GradingWorker(QObject):
 
     def run(self) -> None:
         if self._predictor is None:
-            self.failed.emit("No active model is loaded.")
+            self.failed.emit("No model loaded.")
             return
 
         results: List[Any] = []
@@ -153,7 +143,7 @@ class _GradingWorker(QObject):
 
 
 class _ExportWorker(QObject):
-    """Writes graded results to a CSV file on a background QThread (file I/O)."""
+    """Write graded results to CSV on a background thread."""
 
     finished = pyqtSignal()
     failed = pyqtSignal(str)
@@ -178,7 +168,7 @@ class _ExportWorker(QObject):
 
 @dataclass
 class _QueueImage:
-    """A single image queued for grading, plus the list widgets representing it."""
+    """One queued image plus its list-row widgets."""
 
     id: int
     path: str
@@ -186,14 +176,13 @@ class _QueueImage:
     item: QListWidgetItem
     widget: "_QueueItemWidget"
     result: Optional[Dict[str, Any]] = None
-    #: Snapshot of the active model's output_stats *at grading time*, so a
-    #: later model change doesn't retroactively alter an already-graded
-    #: image's training-average/range comparisons without re-grading it.
+    #: output_stats from the model at grade time, so a later model change
+    #: doesn't rewrite comparisons without re-grading.
     output_stats: Optional[Dict[str, Dict[str, float]]] = None
 
 
 class _QueueItemWidget(QWidget):
-    """Row widget for one queued image: a 64x64 thumbnail plus its filename."""
+    """Queue row: 64×64 thumbnail + filename."""
 
     def __init__(self, filename: str, pil_image: Image.Image, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -227,7 +216,7 @@ class _QueueItemWidget(QWidget):
 
 
 class _QueueList(QListWidget):
-    """QListWidget that also accepts external image files dropped onto it."""
+    """Queue list that also accepts dropped image files."""
 
     files_dropped = pyqtSignal(list)
 
@@ -262,7 +251,7 @@ class _QueueList(QListWidget):
 
 
 class _ImageDropZone(QFrame):
-    """Dashed drag-and-drop target for grading images (no embedded button -- see "Add Images")."""
+    """Dashed drop area for grading images (use Add Images for the file picker)."""
 
     files_selected = pyqtSignal(list)
 
@@ -280,23 +269,18 @@ class _ImageDropZone(QFrame):
         layout.setSpacing(4)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("Drag & drop images here")
+        title = QLabel("Drop images here")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600; background: transparent;")
         layout.addWidget(title)
 
-        subtitle = QLabel("Supports JPG, PNG, and TIF")
+        subtitle = QLabel("JPG, PNG, or TIF")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 10px; background: transparent;")
         layout.addWidget(subtitle)
 
     def _apply_style(self, active: bool) -> None:
-        border_color = ACCENT_HOVER_COLOR if active else ACCENT_COLOR
-        background = "#2A2E36" if active else SURFACE_COLOR
-        self.setStyleSheet(
-            f"QFrame#gradeDropZone {{ background-color: {background}; border: 2px dashed {border_color};"
-            f"border-radius: 8px; }}"
-        )
+        self.setStyleSheet(drop_zone_qss("gradeDropZone", active=active))
 
     @staticmethod
     def _is_supported(path: str) -> bool:
@@ -330,7 +314,7 @@ class _ImageDropZone(QFrame):
 
 
 class _ClickableBanner(QFrame):
-    """A QFrame that emits ``clicked`` on left-click (used for the full-width no-model banner)."""
+    """QFrame that emits ``clicked`` on left-click (no-model banner)."""
 
     clicked = pyqtSignal()
 
@@ -345,7 +329,7 @@ class _ClickableBanner(QFrame):
 
 
 class _AdaptiveImageLabel(QLabel):
-    """QLabel that keeps a source pixmap scaled to fill its current size."""
+    """QLabel that scales its pixmap to fit."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -374,7 +358,7 @@ class _AdaptiveImageLabel(QLabel):
 
 
 class _RangeBar(QWidget):
-    """One output's training-range bar: track spans min..max, amber fill to the predicted value."""
+    """Training-range bar for one output; amber fill up to the prediction."""
 
     def __init__(self, label: str, low: float, high: float, value: float, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -459,7 +443,7 @@ class _RangeBar(QWidget):
 
 
 class _PanGradeCard(QFrame):
-    """"Closest Pan grade: N" indicator, border/accent colour keyed to the grade."""
+    """Closest Pan grade indicator; border colour follows the grade."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -474,7 +458,7 @@ class _PanGradeCard(QFrame):
         self._title_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent;")
         layout.addWidget(self._title_label)
 
-        secondary_label = QLabel("Based on Bitumen content relative to training data averages.")
+        secondary_label = QLabel("Based on Bitumen vs. training averages.")
         secondary_label.setWordWrap(True)
         secondary_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         layout.addWidget(secondary_label)
@@ -494,17 +478,11 @@ class _PanGradeCard(QFrame):
 
 
 class PredictPage(QWidget):
-    """Page for grading bitumen sample images with the active regression model.
+    """Grade sample images with the active model.
 
-    Images populate automatically from ``main_window.grading_images`` (sent
-    over from ``ImageImportPage``'s "Send to Grading" action), can be
-    supplemented via "Add Images", or dropped directly onto the drop zone or
-    the queue list. A single selected image can be graded on its own
-    ("Grade This Image"), or the whole queue at once ("Grade All"); either
-    action runs the active model's ``RegressionPredictor`` on a background
-    QThread. Results can then be inspected per-image (comparison table,
-    per-output range bars, Pan grade indicator) or, after "Grade All", as a
-    batch summary + table exportable to CSV.
+    Images arrive from Import's "Send to Grading", via Add Images, or by
+    drop. Grade one selected image or the whole queue; results show as a
+    single-image view or a batch table you can export to CSV.
     """
 
     def __init__(self, main_window: Optional["MainWindow"] = None, parent: Optional[QWidget] = None):
@@ -514,8 +492,7 @@ class PredictPage(QWidget):
         self._queue: List[_QueueImage] = []
         self._id_counter = itertools.count(1)
         self._selected_id: Optional[int] = None
-        #: "single" shows the not-graded/single-result page for the current
-        #: selection; "batch" shows the batch summary+table (set by "Grade All").
+        #: "single" = not-graded / one result; "batch" = Grade All summary table.
         self._view_mode = "single"
         self._batch_row_queue_ids: List[int] = []
 
@@ -575,8 +552,8 @@ class PredictPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(32, 28, 32, 24)
-        root.setSpacing(16)
+        root.setContentsMargins(*PAGE_MARGINS)
+        root.setSpacing(PAGE_SPACING)
 
         root.addLayout(self._build_header())
         root.addWidget(self._build_model_selector_bar())
@@ -594,7 +571,7 @@ class PredictPage(QWidget):
         root.addLayout(content_row, 1)
 
     def _apply_tab_order(self) -> None:
-        """Chain focus order starting from the top model-selector bar downward."""
+        """Focus order from the model bar downward."""
         chain = [
             self._change_model_button,
             self._queue_list,
@@ -617,7 +594,7 @@ class PredictPage(QWidget):
         title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 20px; font-weight: 600;")
         header.addWidget(title)
 
-        subtitle = QLabel("Predict Water, Solids, and Bitumen content from your bitumen sample images.")
+        subtitle = QLabel("Predict Water, Solids, and Bitumen from your sample photos.")
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
         header.addWidget(subtitle)
@@ -647,9 +624,9 @@ class PredictPage(QWidget):
         self._change_model_button.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {TEXT_PRIMARY}; border: 1px solid {BORDER_COLOR};"
             f"border-radius: 6px; padding: 7px 14px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: #2A2E36; }}"
+            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
         )
-        self._change_model_button.setToolTip(shortcut_tooltip("Go to the Model Library to change the active model", "C"))
+        self._change_model_button.setToolTip(shortcut_tooltip("Open Model Library to change the active model", "C"))
         self._change_model_button.clicked.connect(self._navigate_to_model_library)
         layout.addWidget(self._change_model_button)
         self._shortcut_bindings.append((self._change_model_button, "C"))
@@ -678,9 +655,9 @@ class PredictPage(QWidget):
         self._add_images_button.setStyleSheet(
             f"QPushButton {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY};"
             f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 9px 12px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: #2A2E36; }}"
+            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
         )
-        self._add_images_button.setToolTip(shortcut_tooltip("Add images to the grading queue", "A"))
+        self._add_images_button.setToolTip(shortcut_tooltip("Add images to the queue", "A"))
         self._add_images_button.clicked.connect(self._on_add_images)
         layout.addWidget(self._add_images_button)
         self._shortcut_bindings.append((self._add_images_button, "A"))
@@ -693,14 +670,14 @@ class PredictPage(QWidget):
             }}
             QListWidget::item {{ border-bottom: 1px solid {BORDER_COLOR}; }}
             QListWidget::item:last {{ border-bottom: none; }}
-            QListWidget::item:selected {{ background-color: #2A2E36; }}
+            QListWidget::item:selected {{ background-color: {SURFACE_HOVER_COLOR}; }}
             """
         )
         self._queue_list.files_dropped.connect(self._add_images)
         self._queue_list.currentItemChanged.connect(self._on_queue_selection_changed)
         layout.addWidget(self._queue_list, 1)
 
-        self._queue_status_label = QLabel("0 image(s) loaded")
+        self._queue_status_label = QLabel("0 images loaded")
         self._queue_status_label.setWordWrap(True)
         self._queue_status_label.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;"
@@ -711,10 +688,7 @@ class PredictPage(QWidget):
         self._grade_all_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._grade_all_button.setFixedHeight(46)
         self._grade_all_button.setStyleSheet(
-            f"QPushButton {{ background-color: {ACCENT_COLOR}; color: #13151A; font-weight: 700;"
-            f"font-size: 14px; border: none; border-radius: 6px; }}"
-            f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
-            f"QPushButton:disabled {{ background-color: #4A4230; color: #8B8168; }}"
+            accent_button_qss(extra="font-weight: 700; font-size: 14px; padding: 0px;")
         )
         self._grade_all_button.setToolTip(shortcut_tooltip("Grade every image in the queue", "R"))
         self._grade_all_button.clicked.connect(self._on_grade_all)
@@ -730,7 +704,7 @@ class PredictPage(QWidget):
             f"QPushButton#clearAllLink:hover {{ color: {TEXT_PRIMARY}; text-decoration: underline; }}"
             f"QPushButton#clearAllLink:disabled {{ color: #4A4D55; }}"
         )
-        self._clear_all_button.setToolTip(shortcut_tooltip("Remove every image from the queue", "K"))
+        self._clear_all_button.setToolTip(shortcut_tooltip("Clear the queue", "K"))
         self._clear_all_button.clicked.connect(self._on_clear_all)
         layout.addWidget(self._clear_all_button, 0, Qt.AlignmentFlag.AlignLeft)
         self._shortcut_bindings.append((self._clear_all_button, "K"))
@@ -781,7 +755,7 @@ class PredictPage(QWidget):
         banner_layout.setContentsMargins(24, 20, 24, 20)
 
         message = QLabel(
-            "No model loaded. Load a model from the Model Library before grading images. \u2192"
+            "No model loaded. Pick one in Model Library first. \u2192"
         )
         message.setWordWrap(True)
         message.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -806,7 +780,7 @@ class PredictPage(QWidget):
         self._not_graded_preview.setStyleSheet(f"background-color: {BACKGROUND_COLOR}; border-radius: 8px;")
         frame_layout.addWidget(self._not_graded_preview, 1)
 
-        self._not_graded_placeholder = QLabel("Select an image from the queue to preview it here.")
+        self._not_graded_placeholder = QLabel("Select an image from the queue to preview it.")
         self._not_graded_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._not_graded_placeholder.setWordWrap(True)
         self._not_graded_placeholder.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; background: transparent;")
@@ -918,10 +892,10 @@ class PredictPage(QWidget):
         self._export_button.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {TEXT_PRIMARY}; border: 1px solid {BORDER_COLOR};"
             f"border-radius: 6px; padding: 9px 16px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: #2A2E36; }}"
+            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
             f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid #2A2D34; }}"
         )
-        self._export_button.setToolTip(shortcut_tooltip("Export graded results to a CSV file", "E"))
+        self._export_button.setToolTip(shortcut_tooltip("Export results to CSV", "E"))
         self._export_button.clicked.connect(self._on_export_results)
         action_row.addWidget(self._export_button)
         self._shortcut_bindings.append((self._export_button, "E"))
@@ -935,7 +909,7 @@ class PredictPage(QWidget):
             f"QPushButton#clearResultsLink:hover {{ color: {TEXT_PRIMARY}; text-decoration: underline; }}"
             f"QPushButton#clearResultsLink:disabled {{ color: #4A4D55; }}"
         )
-        self._clear_results_button.setToolTip(shortcut_tooltip("Clear all graded results", "X"))
+        self._clear_results_button.setToolTip(shortcut_tooltip("Clear graded results", "X"))
         self._clear_results_button.clicked.connect(self._on_clear_results)
         action_row.addWidget(self._clear_results_button)
         self._shortcut_bindings.append((self._clear_results_button, "X"))
@@ -953,7 +927,7 @@ class PredictPage(QWidget):
         layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(24)
 
-        for title in ("Images graded", "Mean Water", "Mean Solids", "Mean Bitumen", "Mean sum deviation", "Sum warnings (>5%)"):
+        for title in ("Images graded", "Avg Water", "Avg Solids", "Avg Bitumen", "Avg sum off-by", "Sum warnings (>5%)"):
             self._batch_summary_labels[title] = self._build_stat_block(layout, title)
         layout.addStretch(1)
 
@@ -1013,7 +987,7 @@ class PredictPage(QWidget):
         active_model = getattr(self.main_window, "active_model", None) if self.main_window else None
 
         if not active_model:
-            self._model_value_label.setText("No model loaded \u2014 go to Model Library first.")
+            self._model_value_label.setText("No model loaded \u2014 open Model Library first.")
             self._model_value_label.setStyleSheet(
                 f"color: {ACCENT_COLOR}; font-size: 13px; font-weight: 600; background: transparent;"
             )
@@ -1040,19 +1014,8 @@ class PredictPage(QWidget):
         return parsed.strftime("%b %d, %Y")
 
     def _navigate_to_model_library(self) -> None:
-        if self.main_window is None:
-            return
-        stack = getattr(self.main_window, "_stack", None)
-        sidebar = getattr(self.main_window, "_sidebar", None)
-        pages = getattr(self.main_window, "_pages", [])
-
-        target_index = next((i for i, page in enumerate(pages) if isinstance(page, ModelManagerPage)), None)
-        if target_index is None or stack is None:
-            return
-
-        stack.setCurrentIndex(target_index)
-        if sidebar is not None and hasattr(sidebar, "set_active_index"):
-            sidebar.set_active_index(target_index)
+        if self.main_window is not None:
+            self.main_window.navigate_to("library")
 
     # -- Queue management -----------------------------------------------------
 
@@ -1071,12 +1034,10 @@ class PredictPage(QWidget):
         unbind_page_shortcuts(self._shortcut_bindings)
 
     def _sync_from_main_window(self) -> None:
-        """Pull queued paths from ``main_window.grading_images`` and open each from disk.
+        """Pull paths from ``main_window.grading_images`` and open each from disk.
 
-        ``ImageImportPage`` hands off bare file paths (not decoded images) so
-        that sending a large batch to grading never duplicates thousands of
-        already-imported images in memory; this page opens each one itself,
-        exactly as ``_add_images`` already does for manually-added files.
+        Import only sends paths (not decoded images) so big batches don't
+        double RAM use; we open each file the same way as Add Images.
         """
         if self.main_window is None:
             return
@@ -1108,6 +1069,8 @@ class PredictPage(QWidget):
 
         if failed_names:
             self._show_image_load_error(failed_names)
+
+        self.main_window.grading_images = None
 
     def _on_add_images(self) -> None:
         file_filter = "Images (*.jpg *.jpeg *.png *.tif)"
@@ -1147,7 +1110,7 @@ class PredictPage(QWidget):
         if len(failed_names) > 3:
             names += f", and {len(failed_names) - 3} more"
         count_word = "image" if len(failed_names) == 1 else "images"
-        self._error_label.setText(f"Could not load {len(failed_names)} {count_word}: {names}")
+        self._error_label.setText(f"Couldn't load {len(failed_names)} {count_word}: {names}")
         self._error_label.setVisible(True)
 
     def _add_queue_image(self, path: str, image: Image.Image) -> None:
@@ -1228,7 +1191,7 @@ class PredictPage(QWidget):
         predictor = active_model.get("predictor")
         metadata = active_model.get("metadata") or {}
         if predictor is None:
-            self._error_label.setText("No active model is loaded.")
+            self._error_label.setText("No model loaded.")
             self._error_label.setVisible(True)
             return
 
@@ -1236,7 +1199,7 @@ class PredictPage(QWidget):
         self._pending_grade_all = grade_all
         payload = [(queue_image.id, queue_image.image) for queue_image in images_to_grade]
 
-        self._loading_overlay.show_message("Grading all images\u2026" if grade_all else "Grading image\u2026")
+        self._loading_overlay.show_message("Grading all images\u2026" if grade_all else "Grading\u2026")
         self._set_grading_active(True)
 
         self._thread = QThread(self)
@@ -1253,7 +1216,7 @@ class PredictPage(QWidget):
         self._thread.start()
 
     def _set_grading_active(self, active: bool) -> None:
-        """Disable controls that would race with an in-flight grading job."""
+        """Disable controls while grading is running."""
         for button in (
             self._grade_all_button,
             self._add_images_button,
@@ -1282,7 +1245,7 @@ class PredictPage(QWidget):
 
         if failures:
             count_word = "image" if failures == 1 else "images"
-            self._error_label.setText(f"Failed to grade {failures} {count_word}; see remaining results below.")
+            self._error_label.setText(f"Couldn't grade {failures} {count_word}; other results are below.")
             self._error_label.setVisible(True)
 
         self._update_queue_status_label()
@@ -1309,20 +1272,16 @@ class PredictPage(QWidget):
         self._worker = None
 
     def _handle_model_load_failure(self, exc: Exception) -> None:
-        """On an unexpected grading failure: clear the active model and surface a dialog.
+        """Clear the active model and show a dialog if grading blows up mid-run.
 
-        ``MainWindow.set_active_model`` already validates a checkpoint loads
-        correctly before it becomes active, so this is a defensive fallback
-        for the unlikely case a previously-loaded model becomes unusable
-        mid-session (e.g. its file is deleted from disk). Clearing the
-        app-wide state (which also updates the sidebar status pill and
-        window title) avoids leaving stale state that would just fail again.
+        ``set_active_model`` already checks loads up front; this is a fallback
+        if a loaded model becomes unusable later (e.g. file deleted).
         """
         if self.main_window is not None:
             self.main_window.set_active_model(None)
 
         message = str(exc) or exc.__class__.__name__
-        self._error_label.setText(f"Failed to load model: {message}")
+        self._error_label.setText(f"Couldn't load model: {message}")
         self._error_label.setVisible(True)
         self._refresh_top_bar()
         self._refresh_right_column()
@@ -1330,7 +1289,7 @@ class PredictPage(QWidget):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Critical)
         box.setWindowTitle("Model Load Failed")
-        box.setText("The selected model could not be loaded and has been cleared.")
+        box.setText("That model couldn't be loaded, so it's been cleared.")
         box.setInformativeText(message)
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
         box.exec()
@@ -1351,7 +1310,7 @@ class PredictPage(QWidget):
 
         if queue_image is None:
             self._not_graded_preview.set_source_image(None)
-            self._not_graded_placeholder.setText("Select an image from the queue to preview it here.")
+            self._not_graded_placeholder.setText("Select an image from the queue to preview it.")
             self._not_graded_placeholder.setVisible(True)
             self._grade_this_button.setEnabled(False)
             self._right_stack.setCurrentWidget(self._not_graded_page)
@@ -1441,10 +1400,10 @@ class PredictPage(QWidget):
         warnings = sum(1 for q in graded if q.result["sum_deviation"] > 5.0)
 
         self._batch_summary_labels["Images graded"].setText(str(count))
-        self._batch_summary_labels["Mean Water"].setText(f"{mean_water:.2f}%")
-        self._batch_summary_labels["Mean Solids"].setText(f"{mean_solids:.2f}%")
-        self._batch_summary_labels["Mean Bitumen"].setText(f"{mean_bitumen:.2f}%")
-        self._batch_summary_labels["Mean sum deviation"].setText(f"{mean_sum_deviation:.2f}%")
+        self._batch_summary_labels["Avg Water"].setText(f"{mean_water:.2f}%")
+        self._batch_summary_labels["Avg Solids"].setText(f"{mean_solids:.2f}%")
+        self._batch_summary_labels["Avg Bitumen"].setText(f"{mean_bitumen:.2f}%")
+        self._batch_summary_labels["Avg sum off-by"].setText(f"{mean_sum_deviation:.2f}%")
         self._batch_summary_labels["Sum warnings (>5%)"].setText(str(warnings))
 
     def _refresh_batch_table(self) -> None:
@@ -1542,7 +1501,7 @@ class PredictPage(QWidget):
             )
 
         self._error_label.setVisible(False)
-        self._loading_overlay.show_message("Exporting results\u2026")
+        self._loading_overlay.show_message("Exporting\u2026")
         if self._export_button is not None:
             self._export_button.setEnabled(False)
 
@@ -1566,7 +1525,7 @@ class PredictPage(QWidget):
 
     def _on_export_failed(self, message: str) -> None:
         self._loading_overlay.hide_overlay()
-        self._error_label.setText(f"Failed to export results: {message}")
+        self._error_label.setText(f"Couldn't export results: {message}")
         self._error_label.setVisible(True)
         self._update_action_buttons_enabled()
 

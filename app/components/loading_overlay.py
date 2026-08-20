@@ -1,10 +1,9 @@
 """
-Loading overlay component.
+Loading overlay.
 
-A semi-transparent full-widget overlay (color #1A1C2099) with an animated
-spinner and optional message, used to indicate blocking operations such as
-loading a model or exporting results. Parent it to any page/widget and call
-``show_message(text)`` / ``hide_overlay()`` around the blocking call.
+Dimmed cover with a spinner and optional message for blocking work
+(loading a model, exporting, etc.). Parent it to a page and call
+``show_message`` / ``hide_overlay``.
 """
 from __future__ import annotations
 
@@ -14,9 +13,10 @@ from PyQt6.QtCore import QEvent, QObject, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPaintEvent, QPen
 from PyQt6.QtWidgets import QWidget
 
-ACCENT_COLOR = "#E8A838"
-TEXT_PRIMARY = "#E8E9EC"
-OVERLAY_COLOR = QColor(0x1A, 0x1C, 0x20, 0x99)
+from app.theme import ACCENT_COLOR, BACKGROUND_COLOR, TEXT_PRIMARY
+
+OVERLAY_COLOR = QColor(BACKGROUND_COLOR)
+OVERLAY_COLOR.setAlpha(0x99)
 
 SPINNER_RADIUS = 16
 SPINNER_ARC_SPAN = 270
@@ -25,17 +25,14 @@ DEGREES_PER_TICK = 6
 
 
 class LoadingOverlay(QWidget):
-    """Full-widget semi-transparent overlay with a spinning-arc indicator.
+    """Dimmed overlay with a spinning arc.
 
     Usage::
 
         overlay = LoadingOverlay(self)
         overlay.show_message("Loading model\u2026")
-        QApplication.processEvents()
-        try:
-            ... blocking work ...
-        finally:
-            overlay.hide_overlay()
+        ...
+        overlay.hide_overlay()
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -54,7 +51,7 @@ class LoadingOverlay(QWidget):
         self.hide()
 
     def show_message(self, message: str = "Loading\u2026") -> None:
-        """Show the overlay (covering the parent widget) with ``message``."""
+        """Show the overlay over the parent with ``message``."""
         self._message = message
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
@@ -63,12 +60,12 @@ class LoadingOverlay(QWidget):
         self._timer.start()
 
     def set_message(self, message: str) -> None:
-        """Update the message on an already-visible overlay."""
+        """Change the message while visible."""
         self._message = message
         self.update()
 
     def hide_overlay(self) -> None:
-        """Hide the overlay and stop the spinner animation."""
+        """Hide and stop the spinner."""
         self._timer.stop()
         self.hide()
 

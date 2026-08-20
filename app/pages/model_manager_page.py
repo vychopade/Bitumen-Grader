@@ -1,10 +1,8 @@
 """
-Model Manager page.
+Model Library page.
 
-Provides the UI for browsing, loading, and deleting saved models stored in
-the models/ directory. Displays each saved model using the reusable
-ModelCard component, in a responsive card grid with a name search filter,
-and calls ``main_window.set_active_model(...)`` when the user loads one.
+Browse, load, and delete saved models from ``models/``. Each one shows as a
+``ModelCard``; loading calls ``main_window.set_active_model(...)``.
 """
 from __future__ import annotations
 
@@ -26,25 +24,23 @@ from PyQt6.QtWidgets import (
 )
 
 from app.components.model_card import ModelCard
+from app.paths import MODELS_DIR
+from app.theme import (
+    ACCENT_COLOR,
+    ACCENT_HOVER_COLOR,
+    BORDER_COLOR,
+    DANGER_COLOR,
+    PAGE_MARGINS,
+    PAGE_SPACING,
+    SURFACE_COLOR,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+)
 from app.utils.model_io import list_saved_models
 from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
 
 if TYPE_CHECKING:
     from app.main_window import MainWindow
-
-# --------------------------------------------------------------------------
-# Design tokens (kept local so this page has no dependency on MainWindow)
-# --------------------------------------------------------------------------
-
-SURFACE_COLOR = "#22252C"
-BORDER_COLOR = "#33373F"
-ACCENT_COLOR = "#E8A838"
-ACCENT_HOVER_COLOR = "#C98A20"
-TEXT_PRIMARY = "#E8E9EC"
-TEXT_SECONDARY = "#8B909A"
-DANGER_COLOR = "#E5484D"
-
-_MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "models"
 
 CARD_MIN_WIDTH = 340
 CARD_SPACING = 16
@@ -52,7 +48,7 @@ MIN_COLUMNS = 2
 
 _EMPTY_STATE_SVG = b"""<?xml version="1.0" encoding="UTF-8"?>
 <svg width="120" height="120" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="60" cy="60" r="56" fill="none" stroke="#2E3138" stroke-width="2"/>
+  <circle cx="60" cy="60" r="56" fill="none" stroke="#33373F" stroke-width="2"/>
   <rect x="34" y="50" width="52" height="34" rx="6" fill="none" stroke="#8B909A" stroke-width="2.5"/>
   <line x1="34" y1="60" x2="86" y2="60" stroke="#8B909A" stroke-width="2.5"/>
   <circle cx="60" cy="72" r="6" fill="none" stroke="#E8A838" stroke-width="2.5"/>
@@ -63,11 +59,10 @@ _EMPTY_STATE_SVG = b"""<?xml version="1.0" encoding="UTF-8"?>
 
 
 class _CardsGrid(QWidget):
-    """Container that lays out ModelCard widgets in a responsive grid.
+    """Responsive grid of ModelCard widgets.
 
-    Recomputes the number of columns (minimum ``MIN_COLUMNS``) to fit as
-    many ``CARD_MIN_WIDTH``-wide cards as possible on each resize, and
-    re-flows the current card list whenever the column count changes.
+    Recalculates columns on resize (at least ``MIN_COLUMNS``) so cards stay
+    near ``CARD_MIN_WIDTH`` wide.
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -112,18 +107,15 @@ class _CardsGrid(QWidget):
         for col in range(columns):
             self._layout.setColumnStretch(col, 1)
 
-        # Push a trailing stretch row so a scroll-area-resized container's
-        # leftover vertical space collapses below the cards instead of being
-        # distributed into (and stretching) the card rows themselves.
+        # Extra stretch row so leftover height sits below the cards, not inside them.
         num_rows = (len(self._cards) + columns - 1) // columns if self._cards else 0
         self._layout.setRowStretch(num_rows, 1)
 
 
 class ModelManagerPage(QWidget):
-    """Page for browsing, loading, and deleting saved models.
+    """Browse, load, and delete saved models.
 
-    Scans ``models/`` (via ``model_io.list_saved_models``) every time the
-    page becomes visible, rendering one ``ModelCard`` per saved model.
+    Rescans ``models/`` whenever the page is shown.
     """
 
     def __init__(self, main_window: Optional["MainWindow"] = None, parent: Optional[QWidget] = None):
@@ -152,8 +144,8 @@ class ModelManagerPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(32, 28, 32, 24)
-        root.setSpacing(16)
+        root.setContentsMargins(*PAGE_MARGINS)
+        root.setSpacing(PAGE_SPACING)
 
         root.addLayout(self._build_header())
         root.addWidget(self._build_search_bar())
@@ -173,7 +165,7 @@ class ModelManagerPage(QWidget):
         self._empty_state = self._build_empty_state()
         body_layout.addWidget(self._empty_state)
 
-        self._no_match_label = QLabel("No models match your search.")
+        self._no_match_label = QLabel("Nothing matches that search.")
         self._no_match_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._no_match_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; padding: 40px;")
         self._no_match_label.setVisible(False)
@@ -197,7 +189,7 @@ class ModelManagerPage(QWidget):
         title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 20px; font-weight: 600;")
         header.addWidget(title)
 
-        subtitle = QLabel("Load, review, and manage your saved models.")
+        subtitle = QLabel("Load, retrain on new data, or delete saved models.")
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
         header.addWidget(subtitle)
 
@@ -205,7 +197,7 @@ class ModelManagerPage(QWidget):
 
     def _build_search_bar(self) -> QLineEdit:
         self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("Search models by name\u2026")
+        self._search_edit.setPlaceholderText("Search by name\u2026")
         self._search_edit.setFixedHeight(38)
         self._search_edit.setStyleSheet(
             f"QLineEdit {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY};"
@@ -227,7 +219,7 @@ class ModelManagerPage(QWidget):
         illustration.setFixedSize(120, 120)
         layout.addWidget(illustration, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        message = QLabel("No models yet. Train your first model to get started.")
+        message = QLabel("No models yet. Train one to get started.")
         message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         message.setWordWrap(True)
         message.setFixedWidth(320)
@@ -266,9 +258,9 @@ class ModelManagerPage(QWidget):
 
     def _reload_models(self) -> None:
         try:
-            metadata_list = list_saved_models(_MODELS_DIR)
+            metadata_list = list_saved_models(MODELS_DIR)
         except OSError as exc:
-            self._load_error_label.setText(f"Could not read the models folder: {exc}")
+            self._load_error_label.setText(f"Couldn't read the models folder: {exc}")
             self._load_error_label.setVisible(True)
             metadata_list = []
         else:
@@ -282,6 +274,7 @@ class ModelManagerPage(QWidget):
             card = ModelCard(metadata, is_active=self._is_active_model(metadata))
             card.load_requested.connect(self._on_load_requested)
             card.delete_requested.connect(self._on_delete_requested)
+            card.retrain_requested.connect(self._on_retrain_requested)
             self._cards.append(card)
 
         self._apply_search_filter()
@@ -326,6 +319,15 @@ class ModelManagerPage(QWidget):
         self.main_window.set_active_model(model_path, metadata)
         self._navigate_to_grade_page()
 
+    def _on_retrain_requested(self, metadata: Dict[str, Any]) -> None:
+        if self.main_window is None:
+            return
+        train_page = self.main_window.page_for("train")
+        if train_page is None:
+            return
+        train_page.prepare_retrain(metadata)
+        self.main_window.navigate_to("train")
+
     def _on_delete_requested(self, metadata: Dict[str, Any]) -> None:
         model_path = metadata.get("model_path")
         metadata_path = metadata.get("metadata_path")
@@ -349,36 +351,15 @@ class ModelManagerPage(QWidget):
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
             box.setWindowTitle("Delete Incomplete")
-            box.setText("Some model files could not be deleted.")
+            box.setText("Some model files couldn't be deleted.")
             box.setInformativeText("\n".join(failures))
             box.setStandardButtons(QMessageBox.StandardButton.Ok)
             box.exec()
 
-    # -- Navigation (local imports below avoid a circular import, since
-    #    TrainPage/PredictPage import ModelManagerPage for their own
-    #    "go to library" navigation). ------------------------------------
-
     def _navigate_to_train_page(self) -> None:
-        from app.pages.train_page import TrainPage
-
-        self._navigate_to_page_of_type(TrainPage)
+        if self.main_window is not None:
+            self.main_window.navigate_to("train")
 
     def _navigate_to_grade_page(self) -> None:
-        from app.pages.predict_page import PredictPage
-
-        self._navigate_to_page_of_type(PredictPage)
-
-    def _navigate_to_page_of_type(self, page_type: type) -> None:
-        if self.main_window is None:
-            return
-        stack = getattr(self.main_window, "_stack", None)
-        sidebar = getattr(self.main_window, "_sidebar", None)
-        pages = getattr(self.main_window, "_pages", [])
-
-        target_index = next((i for i, page in enumerate(pages) if isinstance(page, page_type)), None)
-        if target_index is None or stack is None:
-            return
-
-        stack.setCurrentIndex(target_index)
-        if sidebar is not None and hasattr(sidebar, "set_active_index"):
-            sidebar.set_active_index(target_index)
+        if self.main_window is not None:
+            self.main_window.navigate_to("grade")

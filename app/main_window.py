@@ -1,14 +1,9 @@
 """
-Main application window for BitumenGrader.
+Main window for BitumenGrader.
 
-Defines the top-level QMainWindow that hosts the left navigation sidebar
-and switches between the app's pages (Import Images, Train Model, Grade
-Images, Model Library) in a QStackedWidget. Also owns the app-wide
-``active_model`` state -- the currently loaded model's path, metadata dict,
-and a ready-to-use ``RegressionPredictor`` instance -- which is handed to
-child pages that need it (``PredictPage`` for grading, ``ModelManagerPage``
-for the "active model" card highlight) and re-broadcast via the
-``active_model_changed`` signal whenever it changes.
+Sidebar + stacked pages (Import, Train, Grade, Model Library). Owns the
+app-wide ``active_model`` (path, metadata, ready ``RegressionPredictor``)
+and broadcasts ``active_model_changed`` when it changes.
 """
 from __future__ import annotations
 
@@ -47,31 +42,19 @@ from app.pages.image_import_page import ImageImportPage
 from app.pages.model_manager_page import ModelManagerPage
 from app.pages.predict_page import PredictPage
 from app.pages.train_page import TrainPage
-
-# --------------------------------------------------------------------------
-# Design tokens
-# --------------------------------------------------------------------------
-
-BACKGROUND_COLOR = "#1A1C20"
-SURFACE_COLOR = "#22252C"
-ACCENT_COLOR = "#E8A838"
-ACCENT_HOVER_COLOR = "#C98A20"
-TEXT_PRIMARY = "#E8E9EC"
-TEXT_SECONDARY = "#8B909A"
-SEPARATOR_COLOR = "#2A2D34"
-NAV_HOVER_COLOR = "#1D2027"
+from app.paths import ASSETS_DIR
+from app.theme import ACCENT_COLOR, TEXT_PRIMARY, TEXT_SECONDARY
 
 SIDEBAR_WIDTH = 220
 WINDOW_MIN_WIDTH = 1100
 WINDOW_MIN_HEIGHT = 720
 WINDOW_TITLE_BASE = "BitumenGrader"
 
-_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
-_LOGO_PATH = _ASSETS_DIR / "logo.png"
+_LOGO_PATH = ASSETS_DIR / "logo.png"
 
 _FALLBACK_FONT_FAMILIES = ("Segoe UI", "Helvetica Neue", "Arial", "Roboto", "Ubuntu")
 
-#: (key, label, icon kind, page class) for each sidebar nav entry, in display order.
+#: (key, label, icon kind, page class) for each sidebar item.
 _NAV_ITEMS = [
     ("import", "Import Images", "import", ImageImportPage),
     ("train", "Train Model", "train", TrainPage),
@@ -79,14 +62,12 @@ _NAV_ITEMS = [
     ("library", "Model Library", "library", ModelManagerPage),
 ]
 
-#: Alt+<letter> keyboard shortcuts for sidebar nav items. These are always
-#: bound (the sidebar is always visible), so pages must avoid reusing these
-#: letters for their own Alt+key shortcuts.
+#: Alt+letter shortcuts for sidebar nav. Pages should not reuse these letters.
 NAV_SHORTCUT_LETTERS = {"import": "I", "train": "T", "grade": "G", "library": "L"}
 
 
 def _resolve_font_family() -> str:
-    """Return "Inter" if installed on the system, else a common sans-serif fallback."""
+    """Prefer Inter if installed; otherwise a common sans-serif."""
     families = set(QFontDatabase.families())
     if "Inter" in families:
         return "Inter"
@@ -97,11 +78,7 @@ def _resolve_font_family() -> str:
 
 
 def _build_nav_icon(kind: str, color: str, size: int = 18) -> QIcon:
-    """Draw a small flat line-icon for a sidebar nav item.
-
-    Icons are rendered with QPainter primitives (no external image assets)
-    so they stay crisp and match the current text color exactly.
-    """
+    """Small flat sidebar icon drawn with QPainter (no image assets)."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
 
@@ -118,7 +95,7 @@ def _build_nav_icon(kind: str, color: str, size: int = 18) -> QIcon:
     margin = size * 0.18
 
     if kind == "import":
-        # Upward arrow over a tray: an "upload images" glyph.
+        # Upload arrow over a tray.
         mid_x = size / 2
         painter.drawLine(QPointF(mid_x, size - margin), QPointF(mid_x, margin))
         arrow = QPolygonF(
@@ -131,7 +108,7 @@ def _build_nav_icon(kind: str, color: str, size: int = 18) -> QIcon:
         painter.drawPolyline(arrow)
         painter.drawLine(QPointF(margin, size - margin), QPointF(size - margin, size - margin))
     elif kind == "train":
-        # Play glyph inside a circle: "run a training routine".
+        # Play triangle in a circle.
         center = QPointF(size / 2, size / 2)
         painter.drawEllipse(center, size / 2 - margin * 0.4, size / 2 - margin * 0.4)
         triangle = QPolygonF(
@@ -144,7 +121,7 @@ def _build_nav_icon(kind: str, color: str, size: int = 18) -> QIcon:
         painter.setBrush(QColor(color))
         painter.drawPolygon(triangle)
     elif kind == "grade":
-        # Magnifying glass: "inspect / grade a sample".
+        # Magnifying glass.
         radius = size * 0.28
         center = QPointF(size * 0.42, size * 0.42)
         painter.drawEllipse(center, radius, radius)
@@ -152,7 +129,7 @@ def _build_nav_icon(kind: str, color: str, size: int = 18) -> QIcon:
         handle_end = QPointF(size - margin * 0.6, size - margin * 0.6)
         painter.drawLine(handle_start, handle_end)
     elif kind == "library":
-        # Stacked layers: "collection of saved models".
+        # Stacked lines = saved models.
         for index, y in enumerate((size * 0.28, size * 0.5, size * 0.72)):
             inset = index * size * 0.06
             painter.drawLine(QPointF(margin + inset, y), QPointF(size - margin - inset, y))
@@ -162,7 +139,7 @@ def _build_nav_icon(kind: str, color: str, size: int = 18) -> QIcon:
 
 
 class _Sidebar(QWidget):
-    """Fixed-width left navigation sidebar: brand block, nav items, status pill."""
+    """Left nav: brand area, page links, status pill."""
 
     nav_selected = pyqtSignal(int)
 
@@ -251,7 +228,7 @@ class _Sidebar(QWidget):
         self.nav_selected.emit(index)
 
     def set_active_index(self, index: int) -> None:
-        """Programmatically mark the nav button at ``index`` as the active/checked one."""
+        """Mark the nav button at ``index`` as checked."""
         if 0 <= index < len(self._nav_buttons):
             self._nav_buttons[index].setChecked(True)
 
@@ -260,10 +237,7 @@ class _Sidebar(QWidget):
     ) -> None:
         """Update the bottom status pill.
 
-        With a model loaded, shows the model's name (white) on the first
-        line and its best validation MAE per output (secondary colour) on
-        the second. With no model loaded, shows a single amber
-        "No model loaded" line instead.
+        With a model: name + best val MAE. Without: "No model loaded".
         """
         if self._status_dot is None or self._status_label is None or self._status_secondary_label is None:
             return
@@ -294,10 +268,9 @@ class _Sidebar(QWidget):
 
 
 class MainWindow(QMainWindow):
-    """Top-level BitumenGrader window: sidebar navigation + stacked content pages."""
+    """BitumenGrader shell: sidebar + stacked pages."""
 
-    #: Emitted whenever ``active_model`` changes, with the new value (a dict
-    #: with "path"/"metadata" keys, or None if no model is loaded).
+    #: Fired when ``active_model`` changes (dict with path/metadata, or None).
     active_model_changed = pyqtSignal(object)
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -310,8 +283,11 @@ class MainWindow(QMainWindow):
         self._font_family = _resolve_font_family()
         self._apply_base_font()
 
-        #: App-wide active model state: {"path": str, "metadata": dict} or None.
+        #: Active model: {"path", "metadata", "predictor"} or None.
         self.active_model: Optional[Dict[str, Any]] = None
+        #: Path payloads from Import → Train / Grade. Consumed when those pages show.
+        self.training_images: Optional[List[Dict[str, Any]]] = None
+        self.grading_images: Optional[List[Dict[str, Any]]] = None
 
         self._pages: List[QWidget] = []
         self._stack = QStackedWidget()
@@ -358,27 +334,45 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def _on_nav_selected(self, index: int) -> None:
+        self.navigate_to_index(index)
+
+    def navigate_to_index(self, index: int) -> None:
+        """Show the sidebar page at ``index`` and mark that nav item active."""
+        if index < 0 or index >= self._stack.count():
+            return
         self._stack.setCurrentIndex(index)
+        self._sidebar.set_active_index(index)
+
+    def navigate_to(self, page_key: str) -> None:
+        """Show a sidebar page by key (``import``, ``train``, ``grade``, ``library``)."""
+        keys = [item[0] for item in _NAV_ITEMS]
+        try:
+            self.navigate_to_index(keys.index(page_key))
+        except ValueError:
+            return
+
+    def page_for(self, page_key: str) -> Optional[QWidget]:
+        """Return the stacked page for ``page_key``, or ``None``."""
+        keys = [item[0] for item in _NAV_ITEMS]
+        try:
+            index = keys.index(page_key)
+        except ValueError:
+            return None
+        if index < 0 or index >= len(self._pages):
+            return None
+        return self._pages[index]
 
     def set_active_model(self, model_path: Optional[str], metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Set (or clear) the app-wide active model and notify sidebar + pages.
+        """Set or clear the active model; update sidebar + pages.
 
-        Loads ``model_path`` into a ready-to-use ``RegressionPredictor``
-        immediately (rather than leaving that to whichever page grades the
-        first image), so ``PredictPage`` and ``ModelManagerPage`` can both
-        rely on ``self.active_model`` already holding a usable predictor.
+        Loads the checkpoint into a ``RegressionPredictor`` up front so Grade
+        and Library can rely on ``active_model`` already having a usable predictor.
 
         Args:
-            model_path: Path to the ``.pt`` checkpoint to make active, or
-                ``None`` to clear the active model.
-            metadata: The model's metadata dict (as returned by
-                ``app.utils.model_io.load_model_metadata``), used to display
-                a friendly name/MAE summary in the sidebar status pill and
-                to build the ``RegressionPredictor`` (needs ``output_stats``).
+            model_path: Path to the ``.pt`` file, or ``None`` to clear.
+            metadata: Model metadata (name, MAE, ``output_stats``, etc.).
 
-        Raises:
-            Nothing: load failures are caught, shown in a dialog, and leave
-            the previous active model (if any) unchanged.
+        Load failures show a dialog and leave the previous model unchanged.
         """
         if model_path is None:
             self.active_model = None
@@ -394,7 +388,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "Model Load Failed",
-                f"Could not load model \u201c{metadata.get('name') or Path(model_path).stem}\u201d:\n{exc}",
+                f"Couldn't load \u201c{metadata.get('name') or Path(model_path).stem}\u201d:\n{exc}",
             )
             return
 
@@ -406,7 +400,7 @@ class MainWindow(QMainWindow):
         self.active_model_changed.emit(self.active_model)
 
     def _update_window_title(self) -> None:
-        """Refresh the window title to reflect the current active model (if any)."""
+        """Window title includes the active model name, if any."""
         if self.active_model:
             metadata = self.active_model.get("metadata") or {}
             name = metadata.get("name") or Path(self.active_model.get("path", "")).stem
@@ -415,7 +409,7 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{WINDOW_TITLE_BASE} \u2014 No Model Loaded")
 
     def center_on_screen(self) -> None:
-        """Move this window to the center of its current (or primary) screen."""
+        """Center this window on the current (or primary) screen."""
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             return

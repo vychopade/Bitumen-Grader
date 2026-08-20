@@ -1,12 +1,9 @@
 """
-Training progress panel widget (regression).
+Training progress panel.
 
-Reusable widget showing live feedback for a ``RegressionTrainer`` run: an
-epoch progress bar, a patience indicator, per-epoch metric cards (train/val
-loss, Water/Solids/Bitumen MAE), a compositional ("sum to ~100%") sanity
-check, two matplotlib ``FigureCanvasQTAgg`` charts (loss curve, MAE curve),
-a scrollable timestamped log, and a completion or early-stop banner. Used
-by ``TrainPage``, but has no dependency on it or on ``MainWindow``.
+Live feedback for a training run: epoch bar, patience note, metric cards,
+sum-deviation check, loss/MAE charts, timestamped log, and a done / early-stop
+banner. Used by TrainPage; no dependency on MainWindow.
 """
 from __future__ import annotations
 
@@ -31,42 +28,34 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QWidget,
 )
 
-# --------------------------------------------------------------------------
-# Design tokens (kept local so this component has no dependency on MainWindow)
-# --------------------------------------------------------------------------
-
-SURFACE_COLOR = "#22252C"
-BORDER_COLOR = "#33373F"
-ACCENT_COLOR = "#E8A838"
-TEXT_PRIMARY = "#E8E9EC"
-TEXT_SECONDARY = "#8B909A"
-DANGER_COLOR = "#E5484D"
-SUCCESS_COLOR = "#3CB878"
-SUCCESS_HOVER_COLOR = "#58D492"
-SUCCESS_BG = "#1E3327"
-WARNING_BG = "#332B18"
-VAL_LINE_COLOR = "#5B9BD5"
-WATER_LINE_COLOR = "#5B9BD5"
-SOLIDS_LINE_COLOR = "#3CB878"
-BITUMEN_LINE_COLOR = "#E8A838"
+from app.theme import (
+    ACCENT_COLOR,
+    BITUMEN_LINE_COLOR,
+    BORDER_COLOR,
+    DANGER_COLOR,
+    SOLIDS_LINE_COLOR,
+    SUCCESS_BG,
+    SUCCESS_COLOR,
+    SUCCESS_HOVER_COLOR,
+    SURFACE_COLOR,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    VAL_LINE_COLOR,
+    WARNING_BG,
+    WATER_LINE_COLOR,
+)
 
 PLACEHOLDER_VALUE = "\u2014"
 
 
 class ProgressPanel(QWidget):
-    """Live regression-training progress display.
+    """Live training progress display.
 
-    Usage: call ``reset(total_epochs, patience)`` right before starting a
-    run, then ``update_progress(epoch, train_loss, val_loss, val_mae_dict,
-    val_sum_deviation)`` once per completed epoch (connected to
-    ``RegressionTrainer.progress``), ``note_early_stopped(epoch)`` if
-    ``RegressionTrainer.early_stopped`` fires, and finally either
-    ``show_completion(...)`` or ``show_early_stopped_banner(...)`` once
-    ``RegressionTrainer.finished`` arrives (chosen based on
-    ``result.stopped_early``).
+    Call ``reset`` before a run, ``update_progress`` each epoch, optionally
+    ``note_early_stopped``, then ``show_completion`` or ``show_early_stopped_banner``.
     """
 
-    #: Emitted when the user clicks "View in Model Library" on the completion banner.
+    #: Fired when the user clicks "View in Model Library" on the done banner.
     view_in_library_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -183,7 +172,7 @@ class ProgressPanel(QWidget):
     def _build_sum_deviation_row(self) -> QFrame:
         row_frame = QFrame()
         row_frame.setStyleSheet(f"QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}")
-        row_frame.setToolTip("Predictions should sum to ~100%. A high value means the model is struggling.")
+        row_frame.setToolTip("Predictions should sum to ~100%. High values mean the model is struggling.")
 
         row = QHBoxLayout(row_frame)
         row.setContentsMargins(12, 8, 12, 8)
@@ -311,7 +300,7 @@ class ProgressPanel(QWidget):
     # -- Public API ----------------------------------------------------------
 
     def reset(self, total_epochs: int, patience: int) -> None:
-        """Clear all displayed progress and prepare the panel for a fresh run."""
+        """Clear the panel and ready it for a new run."""
         self._total_epochs = total_epochs
         self._patience = patience
         self._best_val_loss = float("inf")
@@ -344,7 +333,7 @@ class ProgressPanel(QWidget):
         self._completion_banner.setVisible(False)
         self._early_stop_banner.setVisible(False)
 
-        self.append_log(f"Starting training for {total_epochs} epoch(s)\u2026")
+        self.append_log(f"Starting training \u2014 {total_epochs} epoch(s)\u2026")
 
     def update_progress(
         self,
@@ -354,12 +343,11 @@ class ProgressPanel(QWidget):
         val_mae_dict: Dict[str, float],
         val_sum_deviation: float,
     ) -> None:
-        """Update all displays with the results of a just-completed epoch."""
+        """Refresh displays after one finished epoch."""
         self._epoch_label.setText(f"Epoch {epoch} / {self._total_epochs}")
         self._progress_bar.setValue(epoch)
 
-        # Mirrors RegressionTrainer's own best-val-loss/patience bookkeeping so
-        # this indicator always matches what the trainer is about to do.
+        # Same best-val / patience logic as RegressionTrainer, so the label matches.
         if val_loss < self._best_val_loss:
             self._best_val_loss = val_loss
             self._patience_counter = 0
@@ -411,40 +399,74 @@ class ProgressPanel(QWidget):
         )
 
     def note_early_stopped(self, epoch: int) -> None:
-        """Log that the trainer's patience was exhausted (called before ``finished`` arrives)."""
-        self.append_log(f"Early stopping triggered at epoch {epoch} (patience exhausted).")
+        """Log that patience ran out (before ``finished``)."""
+        self.append_log(f"Early stop at epoch {epoch} (patience used up).")
 
     def append_log(self, message: str) -> None:
-        """Append an arbitrary timestamped line to the log (e.g. status changes/errors)."""
+        """Append a timestamped log line."""
         if self._log_view is None:
             return
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._log_view.append(f"[{timestamp}] {message}")
 
-    def show_completion(self, model_name: str, best_val_mae: Dict[str, float]) -> None:
-        """Show the green "training complete" banner for a successfully saved model."""
+    def show_completion(
+        self,
+        model_name: str,
+        best_val_mae: Dict[str, float],
+        test_mae: Optional[Dict[str, float]] = None,
+    ) -> None:
+        """Green "training complete" banner after a successful save."""
         self._early_stop_banner.setVisible(False)
         text = (
             f'Training complete \u2014 "{model_name}" saved.\n'
-            f"Best: Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%  "
+            f"Val: Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%  "
             f"Solids \u00b1{best_val_mae.get('Solids', 0.0):.2f}%  "
             f"Bitumen \u00b1{best_val_mae.get('Bitumen', 0.0):.2f}%"
         )
+        if test_mae:
+            text += (
+                f"\nTest: Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
+                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
+                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
+            )
         self._completion_label.setText(text)
         self._completion_banner.setVisible(True)
-        self.append_log(f'Training complete. Model saved as "{model_name}".')
+        self.append_log(f'Training complete. Saved as "{model_name}".')
+        if test_mae:
+            self.append_log(
+                f"Test MAE \u2014 Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
+                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
+                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
+            )
 
-    def show_early_stopped_banner(self, epoch: int, best_val_mae: Dict[str, float]) -> None:
-        """Show the amber "early stopping" banner instead of the green completion banner."""
+    def show_early_stopped_banner(
+        self,
+        epoch: int,
+        best_val_mae: Dict[str, float],
+        test_mae: Optional[Dict[str, float]] = None,
+    ) -> None:
+        """Amber early-stop banner instead of the green one."""
         self._completion_banner.setVisible(False)
         text = (
-            f"Early stopping triggered at epoch {epoch}.\n"
-            f"Best: Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%  "
+            f"Early stop at epoch {epoch}.\n"
+            f"Val: Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%  "
             f"Solids \u00b1{best_val_mae.get('Solids', 0.0):.2f}%  "
             f"Bitumen \u00b1{best_val_mae.get('Bitumen', 0.0):.2f}%"
         )
+        if test_mae:
+            text += (
+                f"\nTest: Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
+                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
+                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
+            )
         self._early_stop_label.setText(text)
         self._early_stop_banner.setVisible(True)
+        if test_mae:
+            self.append_log(
+                f"Test MAE \u2014 Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
+                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
+                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
+            )
 
     # -- Internal helpers --------------------------------------------------
 

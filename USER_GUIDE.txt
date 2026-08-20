@@ -1,554 +1,180 @@
 ════════════════════════════════════════════════════════
-  BITUMENGRADER — USER GUIDE  v1.0
+  BITUMENGRADER — USER GUIDE
 ════════════════════════════════════════════════════════
 
-SECTION 1 — WHAT THIS APPLICATION DOES
---------------------------------------
+1. WHAT IT DOES
+---------------
 
-BitumenGrader is a desktop application that looks at photographs of bitumen
-(asphalt binder) samples and predicts three key composition percentages:
-Water, Solids, and Bitumen content. Instead of relying only on a lab
-technician's eye or a full physical extraction test, you can point the
-application at a photo and get an instant, repeatable numeric estimate for
-each of the three values, expressed as a percentage of the sample.
+BitumenGrader looks at photos of bitumen samples and predicts three
+percentages: Water, Solids, and Bitumen.
 
-Under the hood, BitumenGrader uses something called a CNN (Convolutional
-Neural Network) — specifically a "regressor" that predicts numbers rather
-than picking a category. Think of a CNN as a pattern-recognition system
-that has been shown thousands of example photographs, each one labelled
-with its true, lab-measured Water/Solids/Bitumen percentages, until it has
-learned to notice the small visual differences (colour, texture, sheen)
-that tend to correlate with those measurements. Once it has learned these
-patterns, you can show it a brand new photo it has never seen before and it
-will predict its best estimate of all three percentages, the same way an
-experienced technician can often estimate a sample's composition "by eye"
-after years of practice.
+You train a model on photos that already have lab labels, then use that
+model to grade new photos. It won't replace a full lab test, but it's a
+fast way to get a repeatable estimate from a picture.
 
-Because a well-formed sample's Water, Solids, and Bitumen percentages
-should always add up to close to 100%, BitumenGrader also shows a "sum
-check" alongside every prediction so you can quickly judge how internally
-consistent — and therefore how trustworthy — a given result is. From the
-predicted Bitumen percentage, BitumenGrader also shows an approximate "Pan
-grade" indicator (grades 3 through 6), a quick-reference bucket based on
-where that Bitumen value falls within the range your training data covered.
-See Section 3 for how to read both of these on the Grade Images page.
+Predictions also show a sum check (Water + Solids + Bitumen should be
+near 100%) and a rough Pan grade based on the Bitumen value.
 
 
-SECTION 2 — GETTING STARTED: SYSTEM REQUIREMENTS
--------------------------------------------------
+2. INSTALL AND RUN
+------------------
 
-Before you can run BitumenGrader, make sure your computer has:
+You need:
+  - Python 3.9+
+  - Windows 10/11, macOS 11+, or a recent Linux
+  - A few GB of free disk space (PyTorch is big) and ideally 4 GB+ RAM
 
-  1. Python 3.9 or newer installed (Python is the programming language the
-     application is written in). You can check your installed version by
-     opening a terminal (Command Prompt on Windows, Terminal on Mac/Linux)
-     and typing:
+Install dependencies once:
 
-         python --version
+    pip install -r requirements.txt
 
-  2. An operating system of Windows 10/11, macOS 11 or newer, or a modern
-     Linux distribution (e.g. Ubuntu 20.04+). BitumenGrader does not
-     require an internet connection to run day-to-day, only to install its
-     dependencies the first time.
+Start the app:
 
-  3. At least 4 GB of free disk space (PyTorch, the machine-learning
-     library BitumenGrader depends on, is fairly large) and, ideally,
-     4 GB or more of RAM.
+    python main.py
 
-INSTALLING THE REQUIRED SOFTWARE
+You should see four sidebar pages: Import Images, Train Model,
+Grade Images, and Model Library.
 
-  BitumenGrader depends on several third-party libraries (listed in the
-  file "requirements.txt"). To install them, open a terminal, navigate to
-  the BitumenGrader folder, and run:
 
-         pip install -r requirements.txt
-
-  This downloads and installs everything the application needs, including
-  PyTorch (the machine-learning engine), PyQt6 (the window/interface
-  toolkit), and Pillow (for opening and editing images). This step can
-  take several minutes the first time.
-
-LAUNCHING THE APPLICATION
-
-  Once installation finishes, start BitumenGrader by running:
-
-         python main.py
-
-  A window titled "BitumenGrader" should appear on your screen, centered,
-  with a dark sidebar on the left listing four sections: Import Images,
-  Train Model, Grade Images, and Model Library.
-
-
-SECTION 3 — STEP-BY-STEP: GRADING IMAGES WITH AN EXISTING MODEL
------------------------------------------------------------------
-
-Follow these steps if someone has already trained a model (or you trained
-one previously) and you simply want to predict Water/Solids/Bitumen values
-for some new sample photos.
-
-  1. Open the application (see Section 2 if you have not already).
-
-  2. In the left-hand sidebar, click "Model Library".
-
-  3. Find the model you want to use in the grid of model cards. Each card
-     shows the model's name, the date it was created, a blue "Regression"
-     tag, how many epochs it was trained for, and a summary of its best
-     validation performance in plain measurement terms: "Water ±X.XX%
-     Solids ±X.XX% Bitumen ±X.XX%" (see Section 8 for what these ± numbers
-     mean). Click "Details" on any card to expand its full MAE curve, loss
-     curve, and the output normalisation stats used at training time.
-
-  4. Click the amber "Load Model" button on that card. The button changes
-     to show a checkmark, and the card gets a thin amber highlight down
-     its left edge, confirming that model is now active. You will also
-     see the model's name and its MAE summary appear at the bottom of the
-     sidebar and in the application's title bar.
-
-  5. Click "Grade Images" in the sidebar.
-
-  6. Near the top, you should now see a bar confirming the active model's
-     name and the date it was created. If it instead shows an amber
-     warning saying "No model loaded — go to Model Library first," go
-     back to step 3.
-
-  7. Click "Add Images" (or drag and drop image files directly onto the
-     image queue on the left) to load the photographs you want graded.
-     Supported file types are .jpg, .jpeg, .png, and .tif.
-
-  8. Click the amber "Grade All" button to grade every image in the queue
-     at once, or select a single image in the queue and click "Grade This
-     Image" to grade just that one.
-
-  9. Read your results:
-       - Click any single image in the queue to see a large preview and a
-         results card with a measurement table listing the predicted
-         Water, Solids, and Bitumen percentages next to the training
-         data's average value for each, plus a Sum row showing how close
-         all three predictions add up to 100%.
-       - The Sum row is colour-coded: green means the predictions are
-         within 2% of 100 (highly self-consistent), amber means 2–5%
-         deviation (usable, but worth a second look), and red means more
-         than 5% deviation (treat this particular prediction with extra
-         caution — see Section 8).
-       - Below the table, a horizontal range bar for each output shows
-         where the prediction falls relative to the low/high range seen
-         in the training data, and a "Closest Pan grade" card shows an
-         approximate Pan grade (3 through 6) derived from the predicted
-         Bitumen percentage.
-     After grading a whole batch, a summary card also shows the total
-     number of images graded, the mean Water/Solids/Bitumen values across
-     the batch, the mean sum deviation, and how many images had a sum
-     deviation over 5% ("sum warnings").
-
-  10. To keep a permanent record, click "Export CSV" (available from both
-      the single-image and batch results views). Choose where to save the
-      file, and BitumenGrader will write a CSV (comma-separated values)
-      file — a simple spreadsheet-style file you can open in Excel or any
-      spreadsheet program — listing every image along with its predicted
-      Water, Solids, Bitumen, and Sum values, whether the sum passed the
-      5% consistency check, and its approximate Pan grade.
-
-  11. If you want to start over with a new batch, click "Clear Results"
-      (or "Clear All" to also empty the image queue itself).
-
-
-SECTION 4 — STEP-BY-STEP: TRAINING A NEW MODEL
--------------------------------------------------
-
-Follow these steps when you want to train BitumenGrader on your own set of
-sample photographs and their known Water/Solids/Bitumen/Pan lab values.
-
-  1. Prepare your data first. You need two things:
-       - A CSV (spreadsheet) file with one row per sample image, and
-         columns named exactly "Image", "Pan", "Water", "Solids", and
-         "Bitumen". The "Image" column should hold each photo's filename
-         (with or without its file extension — BitumenGrader tries both
-         automatically when matching).
-       - A folder containing all of the actual image files referenced in
-         that CSV.
-     Recommended quantities, per Pan grade (3 through 6) you want the
-     model to learn a good range of:
-       - Minimum: at least 50 images per Pan grade.
-       - Recommended: 200 or more images per Pan grade, for noticeably
-         better and more reliable predictions.
-     Try to vary lighting, angle, and sample size slightly across your
-     photos — a model trained on very uniform photos may struggle with
-     real-world variety later.
-
-  2. In the sidebar, click "Train Model".
-
-  3. Under "Step 1 — Load CSV File," drag and drop your CSV onto the
-     dashed drop zone, or click "Browse" and select it. Once loaded, you
-     will see a preview of its first 10 rows and a summary of which
-     column BitumenGrader is using for filenames, outputs, and the
-     display-only Pan column. If your CSV is missing any required
-     columns, a red banner lists exactly which ones and what is expected.
-
-  4. Under "Step 2 — Select Image Folder," click "Select Folder" and
-     choose the folder containing your images. BitumenGrader immediately
-     matches every filename in your CSV against the files in that folder
-     and shows a match summary card: "N of M images matched," colour-coded
-     green (over 90% matched), amber (50–90%), or red (under 50%). Click
-     "Show unmatched filenames" to see exactly which rows could not be
-     matched. If your match rate is low, double-check that the filenames
-     in your CSV correspond to real files in the selected folder.
-
-  5. Once your CSV and folder both check out, "Step 3 — Dataset Summary"
-     appears automatically, showing your total matched sample count, how
-     many go to training versus validation (based on the Validation Split
-     setting), the min/max/mean range of each output value, and a Pan
-     grade distribution with a small bar per grade so you can spot gaps
-     in your data before you start training.
-
-  6. On the right-hand side, fill in the training settings:
-       - Give your model a memorable name in the "Model Name" field (for
-         example "RefineryA_June2026").
-       - Adjust the hyperparameters if needed — click the small (i) icon
-         next to "Hyperparameters" for a plain-English explanation of
-         each one inline, or see Section 5 for the full reference. The
-         defaults are a safe starting point if you are unsure.
-
-  7. Click the amber "Start Training" button. (It stays disabled, with a
-     tooltip explaining why, until Steps 1–3 are complete and a model
-     name has been entered.)
-
-  8. Watch the live progress panel while training runs:
-       - The epoch bar shows "Epoch N / (total)" with a progress bar.
-       - If validation performance stops improving, an amber patience
-         indicator appears: "No improvement for N epochs (patience: P)."
-       - A metrics row updates every epoch with the current Train Loss,
-         Val Loss, and Water/Solids/Bitumen MAE (Mean Absolute Error —
-         see Section 8 for what this means in plain terms).
-       - A "Sum deviation" row shows how close validation predictions add
-         up to 100%, colour-coded the same way as on the Grade Images page.
-       - Two live charts plot the loss curve (train vs. validation) and
-         the MAE curve (one line per output) as training progresses.
-       - A scrolling, timestamped log records every epoch's numbers, so
-         you can review the full run afterward.
-     You can click "Stop Training" at any time to cleanly halt the process
-     early if needed — nothing is lost; whatever the best checkpoint was
-     up to that point is still saved.
-
-  9. When training finishes, one of two banners appears:
-       - A green completion banner: "Training complete — [Model Name]
-         saved. Best: Water ±X.XX% Solids ±X.XX% Bitumen ±X.XX%," with a
-         "View in Model Library →" link.
-       - An amber early-stopping banner if the Early Stopping Patience
-         setting kicked in before your chosen Epochs count was reached,
-         showing the same best-MAE summary.
-     Either way, the model is saved automatically to the Model Library and
-     becomes your active model right away, so you can go straight to
-     "Grade Images" to try it out.
-
-
-SECTION 5 — HYPERPARAMETER REFERENCE
-----------------------------------------
-
-"Hyperparameters" are the settings you choose before training starts that
-control how the model learns. You do not need to change any of them to get
-a working model — the defaults are sensible starting points — but
-understanding them helps you fine-tune results.
-
-  EPOCHS
-    What it does: One epoch is one complete pass through every training
-      image. More epochs means the model studies your images more times.
-    Increase it when: the training loss is still decreasing and hasn't
-      leveled off yet, or your dataset is small.
-    Decrease it when: validation loss stops improving or starts getting
-      worse while training loss keeps dropping (a sign of "overfitting" —
-      the model is memorizing your exact photos instead of learning
-      general patterns).
-    Recommended starting value: 30.
-
-  BATCH SIZE
-    What it does: The number of images the model looks at together before
-      updating what it has learned. Smaller batches update more often but
-      more noisily; larger batches are steadier but need more memory.
-    Increase it when: you have a large dataset and plenty of memory, and
-      want smoother, more stable training.
-    Decrease it when: training is slow, your computer runs out of memory,
-      or your dataset is small.
-    Recommended starting value: 32.
-
-  LEARNING RATE
-    What it does: Controls how big a step the model takes each time it
-      adjusts itself based on what it just got right or wrong. Think of it
-      as the model's "stride length" while learning.
-    Increase it when: training is progressing very slowly and loss (the
-      model's error measurement) is barely decreasing.
-    Decrease it when: the loss curve looks jumpy or unstable, or the model
-      seems to be getting worse instead of better.
-    Recommended starting value: 0.001.
-
-  OPTIMIZER
-    What it does: The mathematical strategy the model uses to decide how
-      to adjust itself after each mistake. "Adam" automatically adapts its
-      own step sizes as it goes, making it forgiving and easy to use.
-      "SGD" (Stochastic Gradient Descent) is a simpler, more traditional
-      method that can sometimes reach a slightly better end result but
-      usually needs more careful tuning of the learning rate.
-    Increase/decrease: this is a choice rather than a number — start with
-      Adam, and only try SGD later if you want to experiment.
-    Recommended starting value: Adam.
-
-  WEIGHT DECAY
-    What it does: A small penalty that discourages the model from relying
-      too heavily on any single detail, which helps it generalize better
-      to new images instead of memorizing the training set (this
-      technique is called "regularization").
-    Increase it when: the model's validation loss is noticeably worse than
-      its training loss (overfitting).
-    Decrease it when: the model seems to be learning too slowly or
-      underperforming on both training and validation images.
-    Recommended starting value: 0.0001.
-
-  VALIDATION SPLIT
-    What it does: The percentage of your images that are set aside and
-      never shown to the model during training, so they can be used
-      afterward to fairly check how well it actually learned.
-    Increase it when: you have a lot of images and want a more trustworthy
-      MAE estimate.
-    Decrease it when: you have relatively few images and want to give the
-      model as much training data as possible.
-    Recommended starting value: 20%.
-
-  PRETRAINED BACKBONE
-    What it does: When checked, the model starts from a version that has
-      already learned general visual features (edges, textures, shapes)
-      from millions of unrelated photographs, then adapts that existing
-      knowledge to predicting Water/Solids/Bitumen content. When
-      unchecked, it starts from a blank slate and must learn everything
-      from scratch.
-    Increase (turn on) when: you have a smaller dataset or want faster,
-      more reliable results — this is almost always the better choice.
-    Decrease (turn off) when: you have a very large dataset and want to
-      experiment with training entirely from scratch.
-    Recommended starting value: On (checked).
-
-  NORMALISE TARGETS
-    What it does: Scales the Water, Solids, and Bitumen values onto a
-      common numeric range during training, so the model learns to
-      predict all three outputs equally well instead of focusing mostly
-      on whichever one naturally has the largest raw numbers.
-    Increase (turn on) when: almost always — this is the recommended
-      default and helps training converge more evenly across all three
-      outputs.
-    Decrease (turn off) when: you want to experiment with training on raw
-      percentage values directly, or are troubleshooting a
-      normalisation-related issue.
-    Recommended starting value: On (checked).
-
-  EARLY STOPPING PATIENCE
-    What it does: The number of epochs training will keep running without
-      any improvement in validation loss before it automatically stops,
-      to save time once the model has stopped learning anything new.
-    Increase it when: your validation loss looks noisy/fluctuating and you
-      want to give the model more chances to find a further improvement
-      before giving up.
-    Decrease it when: you want training to stop sooner once results
-      plateau, to save time.
-    Recommended starting value: 5.
-
-
-SECTION 6 — EDITING IMAGES (CROP, FLIP, ROTATE)
-----------------------------------------------------
-
-Why edit images before training or grading? Cameras don't always frame a
-sample perfectly. Cropping out background clutter, straightening a
-sideways photo, or mirroring an image so all your samples "face" the same
-direction helps the model focus on the bitumen sample itself rather than
-irrelevant surroundings — which generally improves the model's predictions.
-
-All edits are non-destructive until you confirm them, meaning you can
-experiment freely and back out at any time before saving your changes.
-
-  HOW TO CROP AN IMAGE
-    1. Select the image's thumbnail so it appears in the editor panel.
-    2. Click the "Crop" button.
-    3. In the dialog that opens, drag the corners or edges of the
-       rectangle to select the area you want to keep.
-    4. Click "Confirm" to accept the crop, or "Cancel" to back out.
-
-  HOW TO FLIP AN IMAGE
-    1. Select the image's thumbnail.
-    2. Click the "Flip Horizontal" icon button to mirror the image
-       left-to-right, or "Flip Vertical" to mirror it top-to-bottom.
-
-  HOW TO ROTATE AN IMAGE
-    1. Select the image's thumbnail.
-    2. Click "Rotate 90° CW" (clockwise) or "Rotate 90° CCW"
-       (counter-clockwise) to turn the image a quarter-turn in that
-       direction. Click the same button again to keep rotating further.
-
-  UNDOING YOUR CHANGES
-    - Click "Reset to Original" at any time before applying to discard
-      all edits and start over from the untouched photo.
-    - Once you are happy with your edits, look for the small yellow dot
-      that appears whenever you have unsaved edits, then click
-      "Apply Changes" to lock them in. Until you click Apply, your edits
-      exist only in the preview and will not be used for training or
-      grading.
-
-
-SECTION 7 — MANAGING YOUR MODELS
--------------------------------------
-
-HOW MODELS ARE NAMED AND STORED
-
-  Every time you finish training a model, BitumenGrader saves two files
-  into the application's "models" folder: one file holding the model's
-  learned weights, and a matching file holding its metadata (creation
-  date, the output normalisation stats for Water/Solids/Bitumen, its best
-  validation MAE, and its full training history). Both files share the
-  name you typed into the "Model Name" field when you started training,
-  so choose a clear, descriptive name (for example "RefineryA_June2026")
-  to make models easy to tell apart later.
-
-HOW TO LOAD A PREVIOUS MODEL
-
-  1. Click "Model Library" in the sidebar.
-  2. Use the search bar at the top to filter by name if you have many
-     models.
-  3. Click "Load Model" on the card for the model you want. It becomes
-     your active model immediately, ready to use on the Grade Images page.
-
-HOW TO DELETE A MODEL
-
-  1. On the model's card in the Model Library, click the red trash-can
-     icon.
-  2. Confirm the deletion in the dialog that appears. This permanently
-     removes both of that model's saved files, so make sure you no longer
-     need it (there is no undo).
-
-WHY KEEP MULTIPLE MODELS?
-
-  Keeping several models side by side is useful when you work with
-  different sources of bitumen, different camera setups, or want to
-  compare an older model's MAE against a newly retrained one before fully
-  switching over. You can freely switch which model is "active" at any
-  time without losing any of the others.
-
-
-SECTION 8 — UNDERSTANDING YOUR RESULTS
--------------------------------------------
-
-WATER, SOLIDS, AND BITUMEN PREDICTIONS
-
-  For every image you grade, BitumenGrader predicts three percentages:
-  Water content, Solids content, and Bitumen content. These are the
-  application's best numeric estimate of what a full lab test would have
-  measured for that sample, based on everything the active model learned
-  from its training images. A well-formed sample's three percentages
-  should add up close to 100% — see "The Sum Check" below.
-
-MEAN ABSOLUTE ERROR (MAE) IN PLAIN ENGLISH
-
-  Every saved model's card, and the live training progress panel, reports
-  an MAE (Mean Absolute Error) for each of Water, Solids, and Bitumen,
-  shown as "±X.XX%". This is simply the average size of the gap between
-  the model's predictions and the true lab-measured values across a set of
-  images it was tested on. For example:
-
-      "On average the model's Water prediction is within ±0.34 percentage
-       points of the true lab value."
-
-  A smaller MAE means more accurate, trustworthy predictions for that
-  output. There is no single "good" MAE threshold that applies to every
-  lab or sample type — instead, compare MAE across your own models over
-  time, and treat a steadily shrinking MAE as a sign that a newly
-  retrained model is an improvement over an older one.
-
-THE SUM CHECK (SUM DEVIATION)
-
-  Because Water + Solids + Bitumen should always add up to approximately
-  100% for a real sample, BitumenGrader adds up the three predicted values
-  and reports how far that sum strays from 100 as the "sum deviation." This
-  acts as a built-in confidence signal that does not require any lab data
-  to compute: a low sum deviation (under 2%) means the three predictions
-  are highly self-consistent and more likely to be reliable; a high sum
-  deviation (over 5%) is a warning sign that the model struggled with that
-  particular image, even without knowing the true values — treat results
-  like this with extra caution, and consider re-grading with a different,
-  better-lit photo of the same sample.
-
-WHAT TO DO IF MAE IS HIGH
-
-  If a model's MAE (shown on its card in the Model Library, or in the live
-  progress panel while training) looks too high for your needs, try the
-  following, roughly in order:
-
-  1. Collect more training images. A small or narrow training set is the
-     most common cause of high MAE. Aim for the recommended minimum of 50
-     images per Pan grade, ideally 200+ (see Section 4).
-
-  2. Improve image consistency. Make sure your sample photos are in
-     focus, consistently lit, and framed similarly to each other — a CNN
-     learns visual patterns, so noisy or wildly inconsistent photos make
-     those patterns harder to learn. Cropping out irrelevant background
-     (see Section 6) also helps.
-
-  3. Increase Epochs. If the live loss/MAE curves were still trending
-     downward when training stopped, the model may simply not have had
-     enough passes through your data yet — try training again with a
-     higher Epochs value (see Section 5).
-
-  4. Check your CSV for errors. A single mistyped Water/Solids/Bitumen
-     value, or a filename that matched the wrong image, will actively
-     mislead training. Re-open your CSV and spot-check a sample of rows
-     against your lab records before retraining.
-
-
-SECTION 9 — TROUBLESHOOTING
+3. GRADE IMAGES (EXISTING MODEL)
 --------------------------------
 
-  PROBLEM: The application won't start.
-    Likely cause: Python is not installed, is an unsupported version, or
-      the required libraries were never installed.
-    Fix: Confirm Python 3.9+ is installed ("python --version"), then run
-      "pip install -r requirements.txt" again from inside the
-      BitumenGrader folder before trying "python main.py" once more. If
-      an error dialog appears when launching, read its message — it is
-      designed to explain what went wrong rather than crash silently.
+1. Open Model Library and click Load Model on the card you want.
+2. Go to Grade Images.
+3. Add photos (Add Images, or drag and drop). JPG, PNG, and TIF work.
+4. Click Grade All, or pick one image and click Grade This Image.
+5. Check the results:
+   - Water / Solids / Bitumen percentages
+   - Sum row: green if close to 100%, amber if a bit off, red if more
+     than about 5% off
+   - Closest Pan grade (rough, from Bitumen %)
+6. Export CSV if you want a spreadsheet of the batch.
+7. Clear Results (or Clear All) when you're done with that batch.
 
-  PROBLEM: A model won't load.
-    Likely cause: The model's file was moved, renamed, deleted outside
-      the application, or its saved file has become corrupted.
-    Fix: BitumenGrader will show an error dialog and automatically clear
-      the "active model" so you don't keep hitting the same failure. Open
-      the Model Library and confirm the model still appears in the list;
-      if not, retrain a replacement using the same or better images.
 
-  PROBLEM: Training crashes or stops unexpectedly.
-    Likely cause: An unusable image slipped into the training set, your
-      computer ran out of memory, or a setting (like batch size) is too
-      large for your hardware.
-    Fix: Check the scrolling log in the progress panel for the specific
-      error message. Try lowering the Batch Size, remove any images that
-      failed to load (BitumenGrader will flag these with a red banner),
-      and start training again. Training can also be stopped safely at
-      any time with the "Stop Training" button if you need to change
-      settings.
+4. TRAIN A NEW MODEL
+--------------------
 
-  PROBLEM: The model's MAE is high, or predictions seem unreliable.
-    Likely cause: Not enough training images, images that are too
-      similar to each other (little variety), incorrect Water/Solids/
-      Bitumen values in the CSV, or too few training epochs.
-    Fix: Double-check your CSV values against your lab records, add more
-      and more varied images per Pan grade (50 minimum, 200+
-      recommended), and try increasing Epochs slightly. See Section 5 for
-      guidance on adjusting other hyperparameters, and Section 8 for more
-      on interpreting MAE.
+You need:
+  - A CSV/Excel file with columns: Image, Pan, Water, Solids, Bitumen
+    (Image = filename; extension optional). An optional Campaign / Experiment /
+    Run column is used if you pick the experiment hold-out split.
+  - A folder of those photos
+  - Ideally 50+ images per Pan grade (200+ is better). Mix lighting and
+    framing a bit so the model isn't too picky later.
 
-  PROBLEM: Images won't import.
-    Likely cause: The file format isn't supported, or the file is
-      corrupted/unreadable.
-    Fix: Confirm your files are .jpg, .jpeg, .png, or .tif. If a
-      particular file still fails, BitumenGrader will show an inline red
-      message telling you it was skipped rather than stopping the whole
-      import — try opening that file in another image viewer to confirm
-      it isn't damaged, or re-export/re-save it in a supported format.
+Steps:
+1. Train Model → load the labels file (drop zone or Browse).
+2. Select the image folder. Check the match summary; fix unmatched names
+   if the match rate is low.
+3. Review the dataset summary (train / validation / test counts, ranges,
+   Pan distribution, and campaigns if you use experiment hold-out).
+4. Name the model. Leave Architecture on Baseline CNN unless you have a
+   reason to try ImageNet transfer (mainly for Solids).
+5. Optional: check "Continue training a saved model" to keep training an
+   existing checkpoint on this new dataset. That saves a new model and
+   leaves the original in the library.
+6. Start Training. Watch loss/MAE charts and the log. You can Stop
+   Training anytime; the best checkpoint so far is kept.
+7. When it finishes, the model is saved and set as active. Go grade
+   some photos to try it.
+
+The default is a compact CNN trained from scratch on froth photos. That
+is more robust on this kind of image than starting from ImageNet. ResNet50
+and VGG16 transfer are optional second-stage experiments; compare them to
+the baseline with an experiment hold-out split before you rely on them.
+
+
+5. TRAINING SETTINGS
+--------------------
+
+Only a few choices are on the Train page. Everything else is locked to the
+recipe from the froth-image study.
+
+  Architecture (default Baseline CNN)
+    Baseline CNN is trained from scratch and is the safest default.
+    ResNet50 / VGG16 start from ImageNet, fine-tune automatically, and are
+    optional. Transfer helped Solids in some setups and usually did not help
+    Bitumen.
+
+  Split (default Random)
+    Random split measures interpolation within familiar runs. Experiment
+    hold-out keeps whole flotation campaigns (from the filename, e.g. N12,
+    or a Campaign column) out of training — closer to a new plant run.
+
+  Continue training a saved model
+    Loads that checkpoint and trains it further on the labels/folder you
+    pick. Architecture stays locked. A new file is saved.
+
+  Epochs (default 100)
+    How many full passes over the training images. Early stopping will
+    halt sooner if validation stops improving for 10 epochs.
+
+Fixed behind the scenes (not shown in the UI):
+
+  Batch size 32, learning rate 0.0001, Adam, weight decay 0.0001
+  Validation 20% / test 15%
+  Images resized to 256×256 (legacy ResNet-18 stays at 224)
+  Targets normalised, cosine LR schedule, composition sum penalty
+  Transfer models: ImageNet weights, 3 freeze-warmup epochs, lower backbone LR
+
+
+6. EDITING IMAGES
+-----------------
+
+On Import Images you can crop, flip, and rotate before sending photos to
+training or grading. Apply Changes saves the edit; Reset undoes it.
+
+Send to Training opens Train Model and fills Step 2 with that photo folder
+(you still need the labels file). Send to Grading opens Grade Images and
+adds the photos to the queue.
+
+
+7. MODEL LIBRARY
+----------------
+
+Each trained model is saved under models/ as a .pt (weights) and .json
+(stats and history). Cards show architecture, val MAE, and test MAE when
+available. Retrain continues that checkpoint on a new labelled dataset
+(Train Model page) and writes a new file.
+
+Load Model sets it for grading. Delete removes that model for good.
+
+
+8. READING RESULTS
+------------------
+
+MAE (±X%) is the average absolute error vs lab labels on the validation
+or test set. Smaller is better. Compare across your own models rather
+than chasing a universal "good" number.
+
+Sum check: how far Water+Solids+Bitumen is from 100%. Under ~2% is
+tight; over ~5% means treat that photo carefully (bad lighting, odd
+crop, etc.).
+
+If MAE is high: more/varied photos, cleaner labels, longer training, or
+crop backgrounds. See the settings above.
+
+
+9. TROUBLESHOOTING
+------------------
+
+  Won't start
+    Check Python version, then: pip install -r requirements.txt
+
+  Model won't load
+    File may be missing or moved. Retrain or load another from the library.
+
+  Training fails
+    Check the progress log. If you run out of memory, close other apps.
+
+  High MAE / weird grades
+    Check CSV values, add more photos, raise epochs, improve framing.
+
+  Import fails
+    Use JPG/PNG/TIF. Broken files are skipped with a message.
 
 
 ════════════════════════════════════════════════════════
-  End of User Guide — BitumenGrader v1.0
+  End of guide
 ════════════════════════════════════════════════════════

@@ -1,40 +1,110 @@
 import math
 import os
 import random
+import re
+from collections import defaultdict
 from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset
-from PIL import Image
-from torchvision import transforms
 
+from app.constants import IMAGE_EXTENSIONS
 from app.utils.data_io import read_labels_file
+from app.utils.image_utils import IMAGE_SIZE, build_eval_transforms, build_train_transforms, prepare_image
+
+
+# Optional CSV columns used as an experiment/campaign id (Case 2 split).
+CAMPAIGN_COLUMN_CANDIDATES = ("Campaign", "Experiment", "Run")
+# IMG_0032_N12.jpg → N12; IMG_0027_11.jpg → N11
+_CAMPAIGN_N_RE = re.compile(r"_N(\d+)", re.IGNORECASE)
+_CAMPAIGN_TRAILING_RE = re.compile(r"_(\d+)$")
+_PARENTHETICAL_RE = re.compile(r"\s*\(.*\)\s*$")
+
+
+def parse_campaign_id(filename: str, row=None) -> str:
+    """Campaign / flotation-run id for experiment-holdout splits.
+
+    Prefers an explicit Campaign/Experiment/Run column, then ``_N12`` in the
+    filename, then a trailing ``_11``. Returns ``unknown`` if none match.
+    """
+    if row is not None:
+        for column in CAMPAIGN_COLUMN_CANDIDATES:
+            has_column = column in row.index if hasattr(row, "index") else column in row
+            if not has_column:
+                continue
+            raw = row[column]
+            if raw is None:
+                continue
+            try:
+                if isinstance(raw, float) and math.isnan(raw):
+                    continue
+            except TypeError:
+                pass
+            text = str(raw).strip()
+            if text and text.lower() not in {"nan", "none"}:
+                return text
+
+    stem = Path(str(filename)).stem
+    stem = _PARENTHETICAL_RE.sub("", stem).strip()
+    match = _CAMPAIGN_N_RE.search(stem)
+    if match:
+        return f"N{match.group(1)}"
+    match = _CAMPAIGN_TRAILING_RE.search(stem)
+    if match:
+        return f"N{match.group(1)}"
+    return "unknown"
 
 
 class RegressionDataset(Dataset):
-    """Loads bitumen sample images and their (Water, Solids, Bitumen) regression targets.
+    """Images + (Water, Solids, Bitumen) targets from a labels file.
 
-    Rows are read from a CSV/text file or Excel workbook (columns: Image,
-    Pan, Water, Solids, Bitumen -- see ``app.utils.data_io.read_labels_file``)
-    and matched against image files in ``image_dir``. The matched set is
-    shuffled deterministically and split into train/val portions; whichever
-    portion this instance represents (``split``) is exposed via ``__len__``/
-    ``__getitem__``, while normalisation statistics are always derived from
-    the training portion only.
+    Matches CSV/Excel rows to files in ``image_dir``, shuffles with a fixed
+    seed, and splits into train/val/test. Norm stats always come from train
+    only, even when this instance is the val or test split.
+
+    ``split_mode``:
+        ``random`` — Case 1: shuffled image-level split (interpolation).
+        ``experiment`` — Case 2: hold out entire flotation campaigns.
     """
 
     EXPECTED_COLUMNS = ["Image", "Pan", "Water", "Solids", "Bitumen"]
-    EXTENSION_CANDIDATES = (".jpg", ".jpeg", ".png", ".tif")
-    IMAGENET_MEAN = [0.485, 0.456, 0.406]
-    IMAGENET_STD = [0.229, 0.224, 0.225]
+    EXTENSION_CANDIDATES = IMAGE_EXTENSIONS
 
-    def __init__(self, csv_path, image_dir, split="train", val_fraction=0.2, normalise=True, seed=42):
+    def __init__(
+        self,
+        csv_path,
+        image_dir,
+        split="train",
+        val_fraction=0.2,
+        test_fraction=0.15,
+        normalise=True,
+        seed=42,
+        split_mode="random",
+        image_size=IMAGE_SIZE,
+        legacy_crop=False,
+    ):
+        if split not in {"train", "val", "test"}:
+            raise ValueError(f"split must be 'train', 'val', or 'test', got {split!r}")
+        if split_mode not in {"random", "experiment"}:
+            raise ValueError(f"split_mode must be 'random' or 'experiment', got {split_mode!r}")
+        if val_fraction < 0 or test_fraction < 0 or val_fraction + test_fraction >= 1.0:
+            raise ValueError(
+                f"val_fraction ({val_fraction}) + test_fraction ({test_fraction}) "
+                "must be >= 0 and leave room for a non-empty train split"
+            )
+
         self.csv_path = csv_path
         self.image_dir = Path(image_dir)
         self.split = split
         self.val_fraction = val_fraction
+        self.test_fraction = test_fraction
         self.normalise = normalise
         self.seed = seed
+        self.split_mode = split_mode
+        self.image_size = int(image_size)
+        self.legacy_crop = bool(legacy_crop)
+        self.split_fallback_reason = None
+        self.split_campaigns = {"train": [], "val": [], "test": []}
 
         df = read_labels_file(csv_path)
         missing_columns = [column for column in self.EXPECTED_COLUMNS if column not in df.columns]
@@ -47,9 +117,8 @@ class RegressionDataset(Dataset):
 
         self.matched = []
         self.unmatched = []
-        #: Rows whose image file *was* found, but whose Water/Solids/Bitumen/
-        #: Pan values couldn't be parsed as numbers (typos, blank cells,
-        #: stray text, etc.). Each entry is {"image": str, "reason": str}.
+        # Image found, but Water/Solids/Bitumen/Pan wasn't a number.
+        # Each entry: {"image": str, "reason": str}.
         self.invalid_rows = []
 
         for _, row in df.iterrows():
@@ -77,9 +146,7 @@ class RegressionDataset(Dataset):
                 bitumen = self._parse_float(row["Bitumen"], "Bitumen")
                 pan = self._parse_pan(row["Pan"])
             except ValueError as exc:
-                # A bad value in one row (e.g. a typo like "1repeated" in the
-                # Pan column) shouldn't abort matching for every other row --
-                # skip just this one and surface it in get_match_summary().
+                # Bad cell (typo, blank, etc.) — skip this row, keep going.
                 self.invalid_rows.append({"image": image_value, "reason": str(exc)})
                 continue
 
@@ -90,50 +157,142 @@ class RegressionDataset(Dataset):
                     "solids": solids,
                     "bitumen": bitumen,
                     "pan": pan,
+                    "campaign": parse_campaign_id(matched_name, row),
                 }
             )
 
         self.total_csv_rows = len(df)
 
-        shuffled = list(self.matched)
-        random.seed(seed)
-        random.shuffle(shuffled)
-        split_index = int(len(shuffled) * (1 - val_fraction))
-        train_portion = shuffled[:split_index]
-        val_portion = shuffled[split_index:]
+        train_portion, val_portion, test_portion = self._assign_splits(
+            list(self.matched),
+            val_fraction=val_fraction,
+            test_fraction=test_fraction,
+            seed=seed,
+            split_mode=split_mode,
+        )
 
-        self.data = train_portion if split == "train" else val_portion
+        if split == "train":
+            self.data = train_portion
+        elif split == "val":
+            self.data = val_portion
+        else:
+            self.data = test_portion
 
         self.output_stats = {}
         for key, label in (("water", "Water"), ("solids", "Solids"), ("bitumen", "Bitumen")):
             mean, std = self._compute_mean_std([item[key] for item in train_portion])
             self.output_stats[label] = {"mean": mean, "std": std}
 
-        self.train_transforms = transforms.Compose(
-            [
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomVerticalFlip(),
-                # Keep most of the sample in frame (lab photos are tightly framed);
-                # torchvision default scale (0.08, 1.0) can crop away the specimen.
-                transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=self.IMAGENET_MEAN, std=self.IMAGENET_STD),
-            ]
-        )
-        self.val_transforms = transforms.Compose(
-            [
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=self.IMAGENET_MEAN, std=self.IMAGENET_STD),
-            ]
-        )
+        self.train_transforms = build_train_transforms(self.image_size)
+        self.val_transforms = build_eval_transforms(self.image_size, legacy_crop=self.legacy_crop)
         self.transforms = self.train_transforms if split == "train" else self.val_transforms
+
+    def _assign_splits(self, matched, val_fraction, test_fraction, seed, split_mode):
+        if split_mode == "experiment":
+            result = self._split_by_campaign(matched, val_fraction, test_fraction, seed)
+            if result is not None:
+                return result
+        shuffled = list(matched)
+        random.seed(seed)
+        random.shuffle(shuffled)
+        train_portion, val_portion, test_portion = self._split_portions(
+            shuffled, val_fraction=val_fraction, test_fraction=test_fraction
+        )
+        self.split_campaigns = {
+            "train": sorted({item["campaign"] for item in train_portion}),
+            "val": sorted({item["campaign"] for item in val_portion}),
+            "test": sorted({item["campaign"] for item in test_portion}),
+        }
+        return train_portion, val_portion, test_portion
+
+    def _split_by_campaign(self, matched, val_fraction, test_fraction, seed):
+        """Hold out entire campaigns (paper Case 2). Falls back if < 2 campaigns."""
+        groups = defaultdict(list)
+        for item in matched:
+            groups[item["campaign"]].append(item)
+
+        campaign_ids = list(groups.keys())
+        if len(campaign_ids) < 2:
+            self.split_fallback_reason = (
+                "Only one flotation campaign was found, so a random image split was used instead."
+            )
+            self.split_mode = "random"
+            return None
+
+        rng = random.Random(seed)
+        rng.shuffle(campaign_ids)
+
+        n = len(campaign_ids)
+        test_n = 0
+        val_n = 0
+        if n >= 3 and test_fraction > 0:
+            test_n = max(1, round(n * test_fraction))
+        if n - test_n >= 2 and val_fraction > 0:
+            val_n = max(1, round(n * val_fraction))
+        while test_n + val_n >= n:
+            if test_n >= val_n and test_n > 0:
+                test_n -= 1
+            elif val_n > 0:
+                val_n -= 1
+            else:
+                break
+
+        test_ids = campaign_ids[:test_n]
+        val_ids = campaign_ids[test_n : test_n + val_n]
+        train_ids = campaign_ids[test_n + val_n :]
+
+        train_portion = [item for cid in train_ids for item in groups[cid]]
+        val_portion = [item for cid in val_ids for item in groups[cid]]
+        test_portion = [item for cid in test_ids for item in groups[cid]]
+
+        rng.shuffle(train_portion)
+        rng.shuffle(val_portion)
+        rng.shuffle(test_portion)
+
+        self.split_campaigns = {
+            "train": sorted(train_ids),
+            "val": sorted(val_ids),
+            "test": sorted(test_ids),
+        }
+        return train_portion, val_portion, test_portion
+
+    @staticmethod
+    def _split_portions(shuffled, val_fraction, test_fraction):
+        """Split a shuffled list into train / val / test."""
+        total = len(shuffled)
+        if total == 0:
+            return [], [], []
+
+        test_count = int(total * test_fraction)
+        val_count = int(total * val_fraction)
+        # At least one train sample if we have enough data.
+        if total >= 3:
+            test_count = max(1, test_count) if test_fraction > 0 else 0
+            val_count = max(1, val_count) if val_fraction > 0 else 0
+            while test_count + val_count >= total:
+                if test_count >= val_count and test_count > 1:
+                    test_count -= 1
+                elif val_count > 1:
+                    val_count -= 1
+                else:
+                    break
+        elif total == 2:
+            # One train + one val; skip test so train isn't empty.
+            test_count = 0
+            val_count = 1
+        else:
+            test_count = 0
+            val_count = 0
+
+        test_portion = shuffled[total - test_count :] if test_count else []
+        val_end = total - test_count
+        val_portion = shuffled[val_end - val_count : val_end] if val_count else []
+        train_portion = shuffled[: val_end - val_count]
+        return train_portion, val_portion, test_portion
 
     @staticmethod
     def _parse_float(raw_value, column_name):
-        """Parse a Water/Solids/Bitumen cell, raising a friendly ``ValueError`` on failure."""
+        """Parse a numeric cell; raise ValueError with a clear message if not."""
         try:
             value = float(raw_value)
         except (TypeError, ValueError):
@@ -144,7 +303,7 @@ class RegressionDataset(Dataset):
 
     @staticmethod
     def _parse_pan(raw_value):
-        """Parse a Pan cell as an int, tolerating float-like strings (e.g. "3.0")."""
+        """Parse Pan as int; also accepts float-like strings like "3.0"."""
         try:
             return int(raw_value)
         except (TypeError, ValueError):
@@ -174,8 +333,17 @@ class RegressionDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        image = Image.open(item["image_path"]).convert("RGB")
+        image = prepare_image(item["image_path"], self.image_size)
         image_tensor = self.transforms(image)
+        # Transforms always emit a square; this is a last-resort guard if a
+        # custom pipeline is swapped in later.
+        if image_tensor.shape[-2:] != (self.image_size, self.image_size):
+            image_tensor = torch.nn.functional.interpolate(
+                image_tensor.unsqueeze(0),
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
 
         target = [item["water"], item["solids"], item["bitumen"]]
         if self.normalise:
@@ -199,20 +367,3 @@ class RegressionDataset(Dataset):
             "invalid_rows": list(self.invalid_rows),
             "match_rate": match_rate,
         }
-
-    def get_pan_distribution(self):
-        distribution = {}
-        for item in self.data:
-            pan = item["pan"]
-            distribution[pan] = distribution.get(pan, 0) + 1
-        return distribution
-
-    def get_output_ranges(self):
-        ranges = {}
-        for key, label in (("water", "Water"), ("solids", "Solids"), ("bitumen", "Bitumen")):
-            values = [item[key] for item in self.data]
-            if values:
-                ranges[label] = {"min": min(values), "max": max(values), "mean": sum(values) / len(values)}
-            else:
-                ranges[label] = {"min": 0.0, "max": 0.0, "mean": 0.0}
-        return ranges
