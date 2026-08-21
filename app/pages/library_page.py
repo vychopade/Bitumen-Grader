@@ -112,7 +112,7 @@ class _CardsGrid(QWidget):
         self._layout.setRowStretch(num_rows, 1)
 
 
-class ModelManagerPage(QWidget):
+class LibraryPage(QWidget):
     """Browse, load, and delete saved models.
 
     Rescans ``models/`` whenever the page is shown.

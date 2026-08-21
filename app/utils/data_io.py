@@ -6,9 +6,6 @@ from typing import Union
 
 import pandas as pd
 
-# CSV/txt first — that's what most people use.
-SUPPORTED_EXTENSIONS = (".csv", ".txt", ".xlsx", ".xls")
-
 _EXCEL_EXTENSIONS = (".xlsx", ".xls")
 
 

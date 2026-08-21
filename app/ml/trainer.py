@@ -30,9 +30,9 @@ class RegressionTrainer(QObject):
 
     Stops early if stop_requested is set or val loss stalls for ``patience``
     epochs. ``adaptation`` is ``scratch`` / ``ft`` (optional freeze warmup then
-    train the backbone) or ``fe`` (backbone stays frozen). Optional knobs:
-    different LRs for backbone vs head, cosine schedule, sum-to-100 penalty,
-    and a held-out test eval after restoring the best checkpoint.
+    train the backbone) or ``fe`` (backbone stays frozen). Uses Adam. Optional
+    knobs: different LRs for backbone vs head, cosine schedule, sum-to-100
+    penalty, and a held-out test eval after restoring the best checkpoint.
     """
 
     # epoch, train_loss, val_loss, val_mae_dict, val_sum_deviation
@@ -51,7 +51,6 @@ class RegressionTrainer(QObject):
         device,
         learning_rate,
         num_epochs,
-        optimizer_name,
         weight_decay,
         output_stats,
         normalise_targets,
@@ -60,7 +59,7 @@ class RegressionTrainer(QObject):
         use_differential_lrs: bool = True,
         backbone_lr_factor: float = 0.1,
         use_cosine_schedule: bool = True,
-        freeze_backbone_epochs: int = 3,
+        freeze_backbone_epochs: int = 0,
         sum_penalty_weight: float = 0.1,
         adaptation: str = "ft",
         parent=None,
@@ -74,7 +73,6 @@ class RegressionTrainer(QObject):
         self.device = device
         self.learning_rate = learning_rate
         self.num_epochs = num_epochs
-        self.optimizer_name = optimizer_name
         self.weight_decay = weight_decay
         self.output_stats = output_stats
         self.normalise_targets = normalise_targets
@@ -115,13 +113,6 @@ class RegressionTrainer(QObject):
                 ]
             param_groups = [{"params": params, "lr": self.learning_rate}]
 
-        if self.optimizer_name == "SGD":
-            return torch.optim.SGD(
-                param_groups,
-                lr=self.learning_rate,
-                momentum=0.9,
-                weight_decay=self.weight_decay,
-            )
         return torch.optim.Adam(
             param_groups,
             lr=self.learning_rate,

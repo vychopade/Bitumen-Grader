@@ -16,12 +16,22 @@ Run:
 python main.py
 ```
 
-## Docs
-
-See [USER_GUIDE.txt](USER_GUIDE.txt) for install, grading, training, settings, and troubleshooting.
+See [USER_GUIDE.txt](USER_GUIDE.txt) for grading, training, settings, and troubleshooting.
 
 ## Tests
 
 ```bash
+pip install -r requirements-dev.txt
 python -m pytest tests/smoke_test.py -v
 ```
+
+## Package a desktop build
+
+Requires the dev extras (PyInstaller). From the repo root:
+
+```bash
+pip install -r requirements-dev.txt
+pyinstaller BitumenGrader.spec
+```
+
+The folder `dist/BitumenGrader/` is the runnable app (`BitumenGrader.app` on macOS). PyTorch makes the bundle large. Sample photos in `BitumenImagesFlotation/` and checkpoints in `models/` are not copied into the build; a packaged app saves new models in the OS application-data folder.

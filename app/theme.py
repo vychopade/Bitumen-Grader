@@ -6,6 +6,8 @@ new literals.
 """
 from __future__ import annotations
 
+from app.constants import SUM_DEVIATION_OK, SUM_DEVIATION_TIGHT
+
 # Palette — matches assets/style.qss
 BACKGROUND_COLOR = "#1A1C20"
 SURFACE_COLOR = "#22252C"
@@ -23,7 +25,6 @@ TEXT_INVERSE = "#13151A"
 
 TEXT_PRIMARY = "#E8E9EC"
 TEXT_SECONDARY = "#8B909A"
-TEXT_DISABLED = "#5B5F68"
 
 DANGER_COLOR = "#E5484D"
 DANGER_HOVER_BG = "rgba(229, 72, 77, 40)"
@@ -117,3 +118,12 @@ def drop_zone_qss(object_name: str, *, active: bool) -> str:
 def card_qss(*, inset: bool = False) -> str:
     fill = BACKGROUND_COLOR if inset else SURFACE_COLOR
     return f"QFrame {{ background-color: {fill}; border-radius: {RADIUS_MD if not inset else 6}px; }}"
+
+
+def sum_deviation_color(deviation: float) -> str:
+    """Green if the composition is tight, amber if usable, red if off."""
+    if deviation < SUM_DEVIATION_TIGHT:
+        return SUCCESS_COLOR
+    if deviation <= SUM_DEVIATION_OK:
+        return ACCENT_COLOR
+    return DANGER_COLOR

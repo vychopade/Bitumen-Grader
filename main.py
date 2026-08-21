@@ -6,12 +6,10 @@ import traceback
 from types import TracebackType
 from typing import Optional, Type
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from app.paths import ASSETS_DIR, MODELS_DIR
+from app.paths import APP_NAME, ASSETS_DIR, MODELS_DIR
 
-APP_NAME = "BitumenGrader"
 APP_VERSION = "1.0.0"
 ORGANIZATION_NAME = "BitumenGrader"
 ORGANIZATION_DOMAIN = "bitumengrader.local"
@@ -78,11 +76,6 @@ def _install_exception_hook(app: QApplication) -> None:
 
 
 def main() -> int:
-    if hasattr(Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
-        QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
-    if hasattr(Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
-        QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
-
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
@@ -97,7 +90,7 @@ def main() -> int:
     _install_exception_hook(app)
     _ensure_models_directory()
 
-    # Import after high-DPI attrs, before any QWidget (Qt startup order).
+    # Import after QApplication exists (Qt startup order).
     from app.main_window import MainWindow
 
     window = MainWindow()

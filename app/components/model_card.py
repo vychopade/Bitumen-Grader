@@ -6,7 +6,6 @@ details / delete. Details expands MAE/loss curves and output stats.
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import matplotlib
@@ -30,6 +29,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QWidget,
 )
 
+from app.components.charts import style_axes
 from app.constants import OUTPUT_NAMES
 from app.theme import (
     ACCENT_COLOR,
@@ -50,8 +50,7 @@ from app.theme import (
     WATER_LINE_COLOR,
     accent_button_qss,
 )
-
-OUTPUT_LABELS = OUTPUT_NAMES
+from app.utils.formatting import format_created_at
 
 
 def _build_check_icon(color: str, size: int = 14) -> QIcon:
@@ -188,7 +187,7 @@ class ModelCard(QFrame):
         name_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 15px; font-weight: 700; background: transparent;")
         name_col.addWidget(name_label)
 
-        date_label = QLabel(self._format_date(self.metadata.get("created_at")))
+        date_label = QLabel(format_created_at(self.metadata.get("created_at"), fmt="Created %b %d %Y at %H:%M"))
         date_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         name_col.addWidget(date_label)
 
@@ -346,7 +345,7 @@ class ModelCard(QFrame):
         axes.plot(epochs, water_maes, color=WATER_LINE_COLOR, linewidth=1.6, label="Water")
         axes.plot(epochs, solids_maes, color=SOLIDS_LINE_COLOR, linewidth=1.6, label="Solids")
         axes.plot(epochs, bitumen_maes, color=BITUMEN_LINE_COLOR, linewidth=1.6, label="Bitumen")
-        self._style_axes(axes, "MAE (%)")
+        style_axes(axes, "MAE (%)")
         legend = axes.legend(loc="upper right", fontsize=7, facecolor=SURFACE_COLOR, edgecolor=BORDER_COLOR)
         for text in legend.get_texts():
             text.set_color(TEXT_SECONDARY)
@@ -372,7 +371,7 @@ class ModelCard(QFrame):
 
         axes.plot(epochs, train_losses, color=ACCENT_COLOR, linewidth=1.6, label="Train Loss")
         axes.plot(epochs, val_losses, color=VAL_LINE_COLOR, linewidth=1.6, label="Val Loss")
-        self._style_axes(axes, "Loss")
+        style_axes(axes, "Loss")
         legend = axes.legend(loc="upper right", fontsize=7, facecolor=SURFACE_COLOR, edgecolor=BORDER_COLOR)
         for text in legend.get_texts():
             text.set_color(TEXT_SECONDARY)
@@ -382,15 +381,6 @@ class ModelCard(QFrame):
         canvas.setFixedHeight(200)
         canvas.setStyleSheet("background-color: transparent;")
         return canvas
-
-    @staticmethod
-    def _style_axes(axes, ylabel: str) -> None:
-        axes.tick_params(colors=TEXT_SECONDARY, labelsize=8)
-        for spine in axes.spines.values():
-            spine.set_color(BORDER_COLOR)
-        axes.set_xlabel("Epoch", color=TEXT_SECONDARY, fontsize=8)
-        axes.set_ylabel(ylabel, color=TEXT_SECONDARY, fontsize=8)
-        axes.grid(True, color=BORDER_COLOR, linewidth=0.5, alpha=0.5)
 
     @staticmethod
     def _build_no_history_placeholder() -> QWidget:
@@ -409,7 +399,7 @@ class ModelCard(QFrame):
             return None
 
         has_test = bool(test_r2)
-        table = QTableWidget(len(OUTPUT_LABELS), 3 if has_test else 2)
+        table = QTableWidget(len(OUTPUT_NAMES), 3 if has_test else 2)
         headers = ["Output", "Val R²"] + (["Test R²"] if has_test else [])
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
@@ -430,7 +420,7 @@ class ModelCard(QFrame):
             }}
             """
         )
-        for row, label in enumerate(OUTPUT_LABELS):
+        for row, label in enumerate(OUTPUT_NAMES):
             values = [label, f"{val_r2.get(label, 0.0):.3f}"]
             if has_test:
                 values.append(f"{test_r2.get(label, 0.0):.3f}")
@@ -445,7 +435,7 @@ class ModelCard(QFrame):
     def _build_output_stats_table(self) -> QTableWidget:
         output_stats = self.metadata.get("output_stats") or {}
 
-        table = QTableWidget(len(OUTPUT_LABELS), 3)
+        table = QTableWidget(len(OUTPUT_NAMES), 3)
         table.setHorizontalHeaderLabels(["Output", "Mean", "Std"])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -466,7 +456,7 @@ class ModelCard(QFrame):
             """
         )
 
-        for row, label in enumerate(OUTPUT_LABELS):
+        for row, label in enumerate(OUTPUT_NAMES):
             stats = output_stats.get(label, {"mean": 0.0, "std": 0.0})
             for col, text in enumerate((label, f"{stats.get('mean', 0.0):.2f}", f"{stats.get('std', 0.0):.2f}")):
                 item = QTableWidgetItem(text)
@@ -510,9 +500,6 @@ class ModelCard(QFrame):
                 accent_button_qss(extra="font-weight: 700; padding: 8px 14px; font-size: 12px;")
             )
 
-    def is_active(self) -> bool:
-        return self._is_active
-
     # -- Internal handlers --------------------------------------------------
 
     def _toggle_details(self) -> None:
@@ -535,12 +522,3 @@ class ModelCard(QFrame):
         if reply == QMessageBox.StandardButton.Yes:
             self.delete_requested.emit(self.metadata)
 
-    @staticmethod
-    def _format_date(created_at: Optional[str]) -> str:
-        if not created_at:
-            return ""
-        try:
-            parsed = datetime.fromisoformat(created_at)
-        except ValueError:
-            return ""
-        return parsed.strftime("Created %b %d %Y at %H:%M")

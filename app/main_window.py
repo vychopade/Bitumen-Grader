@@ -38,10 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.ml.predictor import RegressionPredictor
-from app.pages.image_import_page import ImageImportPage
-from app.pages.model_manager_page import ModelManagerPage
-from app.pages.predict_page import PredictPage
-from app.pages.train_page import TrainPage
+from app.pages import GradePage, ImportPage, LibraryPage, TrainPage
 from app.paths import ASSETS_DIR
 from app.theme import ACCENT_COLOR, TEXT_PRIMARY, TEXT_SECONDARY
 
@@ -56,10 +53,10 @@ _FALLBACK_FONT_FAMILIES = ("Segoe UI", "Helvetica Neue", "Arial", "Roboto", "Ubu
 
 #: (key, label, icon kind, page class) for each sidebar item.
 _NAV_ITEMS = [
-    ("import", "Import Images", "import", ImageImportPage),
+    ("import", "Import Images", "import", ImportPage),
     ("train", "Train Model", "train", TrainPage),
-    ("grade", "Grade Images", "grade", PredictPage),
-    ("library", "Model Library", "library", ModelManagerPage),
+    ("grade", "Grade Images", "grade", GradePage),
+    ("library", "Model Library", "library", LibraryPage),
 ]
 
 #: Alt+letter shortcuts for sidebar nav. Pages should not reuse these letters.

@@ -13,11 +13,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 import pandas as pd
 import torch
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import (
-    QDragEnterEvent,
-    QDropEvent,
-)
+from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -28,7 +24,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -40,7 +35,7 @@ from PyQt6.QtWidgets import (
 from torch.utils.data import DataLoader
 
 from app.components.progress_panel import ProgressPanel
-from app.constants import OUTPUT_NAMES
+from app.constants import EDITED_IMAGES_DIR_NAME, OUTPUT_NAMES
 from app.ml.cnn_model import (
     ARCHITECTURE_LABELS,
     TRAINABLE_ARCHITECTURES,
@@ -49,6 +44,7 @@ from app.ml.cnn_model import (
 )
 from app.ml.dataset import RegressionDataset
 from app.ml.trainer import RegressionTrainer, RegressionTrainingResult
+from app.pages.train_widgets import _CsvDropZone, _DatasetSummaryCard, _MatchSummaryCard
 from app.paths import MODELS_DIR
 from app.theme import (
     ACCENT_COLOR,
@@ -64,10 +60,8 @@ from app.theme import (
     accent_button_qss,
     card_qss,
     danger_outline_button_qss,
-    drop_zone_qss,
     secondary_button_qss,
 )
-from app.utils.data_io import SUPPORTED_EXTENSIONS as SUPPORTED_LABEL_EXTENSIONS
 from app.utils.data_io import read_labels_file
 from app.utils.image_utils import image_size_from_metadata, is_legacy_resnet18
 from app.utils.model_io import list_saved_models, load_model_metadata, save_model
@@ -77,24 +71,19 @@ if TYPE_CHECKING:
     from app.main_window import MainWindow
 
 # Edited imports land here; prefer the original photo folder when sending to Train.
-_EDIT_CACHE_DIR_NAME = "bitumengrader_edited_images"
-
 LEFT_PANEL_WIDTH = 500
-MAX_UNMATCHED_PREVIEW = 200
 VAL_SPLIT_REBUILD_DEBOUNCE_MS = 300
 
-EXPECTED_COLUMNS = list(RegressionDataset.EXPECTED_COLUMNS)  # ["Image", "Pan", "Water", "Solids", "Bitumen"]
-OUTPUT_LABELS = OUTPUT_NAMES
+EXPECTED_COLUMNS = list(RegressionDataset.EXPECTED_COLUMNS)
 
 BATCH_SIZE = 32
-LEARNING_RATE = 0.0001
+LEARNING_RATE_FT = 0.0001
+LEARNING_RATE_FE = 0.001
 WEIGHT_DECAY = 0.0001
-OPTIMIZER_NAME = "Adam"
 VAL_FRACTION = 0.20
 TEST_FRACTION = 0.15
 EARLY_STOPPING_PATIENCE = 10
 SUM_PENALTY_WEIGHT = 0.10
-TRANSFER_FREEZE_EPOCHS = 3
 
 
 def _default_num_workers() -> int:
@@ -106,361 +95,6 @@ def _default_num_workers() -> int:
     import platform
 
     return 0 if platform.system() == "Windows" else 4
-
-
-class _CsvDropZone(QFrame):
-    """Dashed drop area for the training CSV, plus a Browse button."""
-
-    file_selected = pyqtSignal(str)
-
-    _SUPPORTED_EXTENSIONS = SUPPORTED_LABEL_EXTENSIONS
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setObjectName("csvDropZone")
-        self.setAcceptDrops(True)
-        self.setFixedHeight(120)
-        self._build_ui()
-        self._apply_style(active=False)
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 12, 20, 12)
-        layout.setSpacing(6)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        title = QLabel("Drop your CSV or Excel file here")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600; background: transparent;")
-        layout.addWidget(title)
-
-        subtitle = QLabel(".csv, .txt, .xlsx, or .xls")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
-        layout.addWidget(subtitle)
-
-        self.browse_button = QPushButton("Browse")
-        self.browse_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.browse_button.setFixedWidth(120)
-        self.browse_button.setStyleSheet(accent_button_qss(extra="padding: 7px 14px;"))
-        self.browse_button.clicked.connect(self._browse_file)
-        layout.addWidget(self.browse_button, 0, Qt.AlignmentFlag.AlignHCenter)
-
-    def _apply_style(self, active: bool) -> None:
-        self.setStyleSheet(drop_zone_qss("csvDropZone", active=active))
-
-    def _browse_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Label File",
-            "",
-            "All Supported Files (*.csv *.txt *.xlsx *.xls);;CSV Files (*.csv);;"
-            "Excel Files (*.xlsx *.xls);;Text Files (*.txt)",
-        )
-        if path:
-            self.file_selected.emit(path)
-
-    @classmethod
-    def _is_supported(cls, path: str) -> bool:
-        return path.lower().endswith(cls._SUPPORTED_EXTENSIONS)
-
-    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        mime_data = event.mimeData()
-        if mime_data.hasUrls() and any(
-            url.isLocalFile() and self._is_supported(url.toLocalFile()) for url in mime_data.urls()
-        ):
-            event.acceptProposedAction()
-            self._apply_style(active=True)
-        else:
-            event.ignore()
-
-    def dragLeaveEvent(self, event) -> None:  # noqa: D401 - Qt override
-        self._apply_style(active=False)
-
-    def dropEvent(self, event: QDropEvent) -> None:
-        self._apply_style(active=False)
-        paths = [
-            url.toLocalFile()
-            for url in event.mimeData().urls()
-            if url.isLocalFile() and self._is_supported(url.toLocalFile())
-        ]
-        if paths:
-            self.file_selected.emit(paths[0])
-            event.acceptProposedAction()
-        else:
-            event.ignore()
-
-
-class _MatchSummaryCard(QFrame):
-    """Match count plus expandable unmatched / invalid-row lists."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setStyleSheet(card_qss(inset=True))
-
-        self._unmatched_count = 0
-        self._invalid_count = 0
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
-
-        self._summary_label = QLabel("")
-        self._summary_label.setWordWrap(True)
-        layout.addWidget(self._summary_label)
-
-        self._invalid_summary_label = QLabel("")
-        self._invalid_summary_label.setWordWrap(True)
-        self._invalid_summary_label.setStyleSheet(
-            f"color: {DANGER_COLOR}; font-size: 12px; font-weight: 600; background: transparent;"
-        )
-        self._invalid_summary_label.setVisible(False)
-        layout.addWidget(self._invalid_summary_label)
-
-        self._tip_label = QLabel("")
-        self._tip_label.setWordWrap(True)
-        self._tip_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
-        self._tip_label.setVisible(False)
-        layout.addWidget(self._tip_label)
-
-        self.toggle_button = QPushButton("")
-        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_button.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {TEXT_SECONDARY}; border: none;"
-            f"text-decoration: underline; font-size: 11px; text-align: left; padding: 0px; }}"
-            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
-        )
-        self.toggle_button.clicked.connect(self._toggle_unmatched)
-        self.toggle_button.setVisible(False)
-        layout.addWidget(self.toggle_button, 0, Qt.AlignmentFlag.AlignLeft)
-
-        self._unmatched_label = QLabel("")
-        self._unmatched_label.setWordWrap(True)
-        self._unmatched_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
-        self._unmatched_label.setVisible(False)
-        layout.addWidget(self._unmatched_label)
-
-        self._invalid_toggle_button = QPushButton("")
-        self._invalid_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._invalid_toggle_button.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {DANGER_COLOR}; border: none;"
-            f"text-decoration: underline; font-size: 11px; text-align: left; padding: 0px; }}"
-            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
-        )
-        self._invalid_toggle_button.clicked.connect(self._toggle_invalid)
-        self._invalid_toggle_button.setVisible(False)
-        layout.addWidget(self._invalid_toggle_button, 0, Qt.AlignmentFlag.AlignLeft)
-
-        self._invalid_rows_label = QLabel("")
-        self._invalid_rows_label.setWordWrap(True)
-        self._invalid_rows_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
-        self._invalid_rows_label.setVisible(False)
-        layout.addWidget(self._invalid_rows_label)
-
-    def update_summary(self, match_summary: Dict) -> None:
-        matched = match_summary["matched"]
-        total = match_summary["total_csv_rows"]
-        rate_pct = match_summary["match_rate"] * 100
-
-        self._summary_label.setText(f"{matched} of {total} images matched")
-        if rate_pct > 90:
-            color = SUCCESS_COLOR
-        elif rate_pct >= 50:
-            color = ACCENT_COLOR
-        else:
-            color = DANGER_COLOR
-        self._summary_label.setStyleSheet(
-            f"color: {color}; font-size: 15px; font-weight: 700; background: transparent;"
-        )
-
-        if rate_pct < 50:
-            self._tip_label.setText(
-                "Check that CSV filenames match your image files. Matching works "
-                "with or without the file extension."
-            )
-            self._tip_label.setVisible(True)
-        else:
-            self._tip_label.setVisible(False)
-
-        unmatched_files: List[str] = list(match_summary.get("unmatched_files", []))
-        self._unmatched_count = len(unmatched_files)
-        if unmatched_files:
-            preview = unmatched_files[:MAX_UNMATCHED_PREVIEW]
-            text = ", ".join(preview)
-            if len(unmatched_files) > len(preview):
-                text += f", and {len(unmatched_files) - len(preview)} more"
-            self._unmatched_label.setText(text)
-            self.toggle_button.setVisible(True)
-        else:
-            self.toggle_button.setVisible(False)
-
-        self._unmatched_label.setVisible(False)
-        self.toggle_button.setText(f"Show unmatched filenames ({self._unmatched_count}) \u25be")
-
-        invalid_rows: List[Dict] = list(match_summary.get("invalid_rows", []))
-        self._invalid_count = len(invalid_rows)
-        if invalid_rows:
-            word = "row" if self._invalid_count == 1 else "rows"
-            self._invalid_summary_label.setText(
-                f"{self._invalid_count} {word} skipped \u2014 couldn't read Water/Solids/Bitumen/Pan."
-            )
-            self._invalid_summary_label.setVisible(True)
-
-            preview = invalid_rows[:MAX_UNMATCHED_PREVIEW]
-            text = "\n".join(f"\u201c{entry['image']}\u201d \u2014 {entry['reason']}" for entry in preview)
-            if len(invalid_rows) > len(preview):
-                text += f"\n\u2026and {len(invalid_rows) - len(preview)} more"
-            self._invalid_rows_label.setText(text)
-            self._invalid_toggle_button.setVisible(True)
-        else:
-            self._invalid_summary_label.setVisible(False)
-            self._invalid_toggle_button.setVisible(False)
-
-        self._invalid_rows_label.setVisible(False)
-        self._invalid_toggle_button.setText(f"Show invalid rows ({self._invalid_count}) \u25be")
-
-    def _toggle_invalid(self) -> None:
-        showing = not self._invalid_rows_label.isVisible()
-        self._invalid_rows_label.setVisible(showing)
-        verb = "Hide" if showing else "Show"
-        arrow = "\u25b4" if showing else "\u25be"
-        self._invalid_toggle_button.setText(f"{verb} invalid rows ({self._invalid_count}) {arrow}")
-
-    def _toggle_unmatched(self) -> None:
-        showing = not self._unmatched_label.isVisible()
-        self._unmatched_label.setVisible(showing)
-        verb = "Hide" if showing else "Show"
-        arrow = "\u25b4" if showing else "\u25be"
-        self.toggle_button.setText(f"{verb} unmatched filenames ({self._unmatched_count}) {arrow}")
-
-
-class _DatasetSummaryCard(QFrame):
-    """Sample counts, output ranges, and pan-grade bars."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setStyleSheet(card_qss(inset=True))
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(10)
-
-        self._counts_label = QLabel("")
-        self._counts_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
-        layout.addWidget(self._counts_label)
-
-        ranges_title = QLabel("Output ranges:")
-        ranges_title.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; background: transparent;"
-        )
-        layout.addWidget(ranges_title)
-
-        self._ranges_label = QLabel("")
-        self._ranges_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
-        layout.addWidget(self._ranges_label)
-
-        pan_title = QLabel("Pan grades:")
-        pan_title.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; background: transparent;"
-        )
-        layout.addWidget(pan_title)
-
-        self._pan_container = QVBoxLayout()
-        self._pan_container.setSpacing(6)
-        layout.addLayout(self._pan_container)
-
-        self._campaigns_title = QLabel("Held-out campaigns:")
-        self._campaigns_title.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; background: transparent;"
-        )
-        self._campaigns_title.setVisible(False)
-        layout.addWidget(self._campaigns_title)
-
-        self._campaigns_label = QLabel("")
-        self._campaigns_label.setWordWrap(True)
-        self._campaigns_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
-        self._campaigns_label.setVisible(False)
-        layout.addWidget(self._campaigns_label)
-
-    def update_summary(
-        self,
-        total: int,
-        train_count: int,
-        val_count: int,
-        test_count: int,
-        val_fraction: float,
-        test_fraction: float,
-        output_ranges: Dict[str, Dict[str, float]],
-        pan_distribution: Dict[int, int],
-        split_mode: str = "random",
-        split_campaigns: Optional[Dict[str, List[str]]] = None,
-        split_fallback_reason: Optional[str] = None,
-    ) -> None:
-        train_pct = round((1 - val_fraction - test_fraction) * 100)
-        val_pct = round(val_fraction * 100)
-        test_pct = round(test_fraction * 100)
-        self._counts_label.setText(
-            f"Matched: {total}\n"
-            f"Train: {train_count} ({train_pct}%)\n"
-            f"Validation: {val_count} ({val_pct}%)\n"
-            f"Test: {test_count} ({test_pct}%)"
-        )
-
-        lines = []
-        for label in OUTPUT_LABELS:
-            values = output_ranges.get(label, {"min": 0.0, "max": 0.0, "mean": 0.0})
-            lines.append(
-                f"{label}: {values['min']:.2f} \u2013 {values['max']:.2f} % (mean {values['mean']:.2f})"
-            )
-        self._ranges_label.setText("\n".join(lines))
-
-        while self._pan_container.count():
-            item = self._pan_container.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-        max_count = max(pan_distribution.values()) if pan_distribution else 1
-        for grade in sorted(pan_distribution.keys()):
-            count = pan_distribution[grade]
-            row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(8)
-
-            label = QLabel(f"Grade {grade}: {count}")
-            label.setFixedWidth(90)
-            label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
-            row_layout.addWidget(label)
-
-            bar = QProgressBar()
-            bar.setRange(0, max_count)
-            bar.setValue(count)
-            bar.setTextVisible(False)
-            bar.setFixedHeight(10)
-            bar.setStyleSheet(
-                f"QProgressBar {{ background-color: {SURFACE_COLOR}; border-radius: 5px; border: none; }}"
-                f"QProgressBar::chunk {{ background-color: {ACCENT_COLOR}; border-radius: 5px; }}"
-            )
-            row_layout.addWidget(bar, 1)
-
-            self._pan_container.addWidget(row_widget)
-
-        show_campaigns = split_mode == "experiment" or bool(split_fallback_reason)
-        if show_campaigns:
-            campaigns = split_campaigns or {}
-            lines = []
-            for key, title in (("train", "Train"), ("val", "Val"), ("test", "Test")):
-                names = campaigns.get(key) or []
-                lines.append(f"{title}: {', '.join(names) if names else '—'}")
-            if split_fallback_reason:
-                lines.append(split_fallback_reason)
-            self._campaigns_label.setText("\n".join(lines))
-            self._campaigns_title.setVisible(True)
-            self._campaigns_label.setVisible(True)
-        else:
-            self._campaigns_title.setVisible(False)
-            self._campaigns_label.setVisible(False)
 
 
 class TrainPage(QWidget):
@@ -501,8 +135,12 @@ class TrainPage(QWidget):
         self._continue_checkbox: Optional[QCheckBox] = None
         self._continue_combo: Optional[QComboBox] = None
         self._architecture_combo: Optional[QComboBox] = None
+        self._adaptation_combo: Optional[QComboBox] = None
+        self._head_combo: Optional[QComboBox] = None
         self._split_mode_combo: Optional[QComboBox] = None
         self._strategy_note: Optional[QLabel] = None
+        self._adaptation_label: Optional[QLabel] = None
+        self._head_label: Optional[QLabel] = None
         self._epochs_spin: Optional[QSpinBox] = None
         self._start_button: Optional[QPushButton] = None
         self._stop_button: Optional[QPushButton] = None
@@ -560,6 +198,8 @@ class TrainPage(QWidget):
             self._continue_checkbox,
             self._continue_combo,
             self._architecture_combo,
+            self._adaptation_combo,
+            self._head_combo,
             self._split_mode_combo,
             self._epochs_spin,
             self._start_button,
@@ -687,7 +327,7 @@ class TrainPage(QWidget):
         mapping_form.setContentsMargins(12, 10, 12, 10)
         mapping_form.setSpacing(6)
         self._add_mapping_row(mapping_form, "Filename column:", "Image")
-        self._add_mapping_row(mapping_form, "Outputs to predict:", ", ".join(OUTPUT_LABELS))
+        self._add_mapping_row(mapping_form, "Outputs to predict:", ", ".join(OUTPUT_NAMES))
         self._add_mapping_row(mapping_form, "Display only:", "Pan")
         self._column_mapping_frame.setVisible(False)
         layout.addWidget(self._column_mapping_frame)
@@ -841,6 +481,34 @@ class TrainPage(QWidget):
         self._architecture_combo.currentIndexChanged.connect(self._on_strategy_changed)
         self._add_form_row(form, "Architecture", self._architecture_combo)
 
+        self._adaptation_combo = QComboBox()
+        self._adaptation_combo.addItem("Fine-tune (recommended)", "ft")
+        self._adaptation_combo.addItem("Frozen features", "fe")
+        self._adaptation_combo.setToolTip(
+            "Fine-tuning trains the whole net and beat frozen ImageNet features in the study. "
+            "Frozen features keep the backbone fixed and were weaker, especially for Bitumen."
+        )
+        self._adaptation_combo.currentIndexChanged.connect(self._on_strategy_changed)
+        self._adaptation_label = QLabel("Adaptation")
+        self._adaptation_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;"
+        )
+        form.addRow(self._adaptation_label, self._adaptation_combo)
+
+        self._head_combo = QComboBox()
+        self._head_combo.addItem("Native linear", "native")
+        self._head_combo.addItem("2-layer (C2)", "c2")
+        self._head_combo.setToolTip(
+            "Native is a single linear layer. C2 is the 2-layer head that helped Solids. "
+            "Deeper batch-norm heads are omitted because they collapse."
+        )
+        self._head_combo.currentIndexChanged.connect(self._on_strategy_changed)
+        self._head_label = QLabel("Head")
+        self._head_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;"
+        )
+        form.addRow(self._head_label, self._head_combo)
+
         self._split_mode_combo = QComboBox()
         self._split_mode_combo.addItem("Random split", "random")
         self._split_mode_combo.addItem("Experiment hold-out", "experiment")
@@ -894,12 +562,22 @@ class TrainPage(QWidget):
         return str(data) if data else "baseline"
 
     def _current_adaptation(self) -> str:
-        return "scratch" if self._current_architecture() == "baseline" else "ft"
+        if not self._is_transfer_architecture():
+            return "scratch"
+        if self._adaptation_combo is None:
+            return "ft"
+        data = self._adaptation_combo.currentData()
+        return str(data) if data else "ft"
 
     def _current_head(self) -> str:
         if self._parent_model_meta:
             return str(self._parent_model_meta.get("head") or "native")
-        return "native"
+        if not self._is_transfer_architecture():
+            return "native"
+        if self._head_combo is None:
+            return "native"
+        data = self._head_combo.currentData()
+        return str(data) if data else "native"
 
     def _is_transfer_architecture(self, architecture: Optional[str] = None) -> bool:
         architecture = architecture or self._current_architecture()
@@ -987,6 +665,12 @@ class TrainPage(QWidget):
                 self._architecture_combo.setCurrentIndex(index)
             self._architecture_combo.setEnabled(False)
             self._architecture_combo.blockSignals(False)
+        if self._head_combo is not None:
+            head = data.get("head", "native")
+            head_index = self._head_combo.findData(head)
+            if head_index >= 0:
+                self._head_combo.setCurrentIndex(head_index)
+            self._head_combo.setEnabled(False)
         if self._model_name_edit is not None and not self._model_name_edit.text().strip():
             base = data.get("name") or "model"
             self._model_name_edit.setText(f"{base} retrained")
@@ -1016,14 +700,26 @@ class TrainPage(QWidget):
 
     def _on_strategy_changed(self, _index: int = 0) -> None:
         is_baseline = self._current_architecture() == "baseline"
+        is_transfer = self._is_transfer_architecture()
         continuing = bool(self._continue_checkbox is not None and self._continue_checkbox.isChecked())
+        show_transfer_controls = is_transfer or (continuing and self._is_transfer_architecture())
+
+        if self._adaptation_combo is not None:
+            self._adaptation_combo.setVisible(show_transfer_controls)
+            if self._adaptation_label is not None:
+                self._adaptation_label.setVisible(show_transfer_controls)
+        if self._head_combo is not None:
+            self._head_combo.setVisible(show_transfer_controls)
+            self._head_combo.setEnabled(show_transfer_controls and not continuing)
+            if self._head_label is not None:
+                self._head_label.setVisible(show_transfer_controls)
 
         if self._strategy_note is not None:
             if continuing:
                 parent = (self._parent_model_meta or {}).get("name") or "the selected model"
                 self._strategy_note.setText(
-                    f"Continuing \u201c{parent}\u201d on the dataset below. Architecture "
-                    "stays locked so weights load correctly. A new model file is saved; the original is kept."
+                    f"Continuing \u201c{parent}\u201d on the dataset below. Architecture and head "
+                    "stay locked so weights load correctly. A new model file is saved; the original is kept."
                 )
             elif is_baseline:
                 self._strategy_note.setText(
@@ -1032,8 +728,9 @@ class TrainPage(QWidget):
                 )
             else:
                 self._strategy_note.setText(
-                    "ImageNet transfer is optional and mainly helps Solids. Fine-tuning is applied "
-                    "automatically. Compare against the baseline under an experiment hold-out before deploying."
+                    "ImageNet transfer is optional and mainly helps Solids. Fine-tuning beat frozen "
+                    "features in the study; the 2-layer (C2) head is the custom head that helped Solids. "
+                    "Compare against the baseline under an experiment hold-out before deploying."
                 )
 
     # -- CSV / folder / dataset summary --------------------------------------
@@ -1144,7 +841,7 @@ class TrainPage(QWidget):
         if not parents:
             return None
         counts = Counter(parents)
-        preferred = {folder: count for folder, count in counts.items() if Path(folder).name != _EDIT_CACHE_DIR_NAME}
+        preferred = {folder: count for folder, count in counts.items() if Path(folder).name != EDITED_IMAGES_DIR_NAME}
         pool = preferred or dict(counts)
         return max(pool, key=pool.get)
 
@@ -1360,7 +1057,6 @@ class TrainPage(QWidget):
             if continuing:
                 architecture = parent_meta.get("architecture", architecture)
                 head = parent_meta.get("head", head)
-                adaptation = "scratch" if architecture == "baseline" else "ft"
                 model = BitumenRegressor.from_checkpoint(parent_meta["model_path"], parent_meta, device)
                 model.train()
             else:
@@ -1369,24 +1065,22 @@ class TrainPage(QWidget):
             self._show_status_error(f"Couldn't load model: {exc}")
             return
 
-        freeze_epochs = 0 if architecture == "baseline" else TRANSFER_FREEZE_EPOCHS
+        learning_rate = LEARNING_RATE_FE if adaptation == "fe" else LEARNING_RATE_FT
 
         trainer = RegressionTrainer(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
             device=device,
-            learning_rate=LEARNING_RATE,
+            learning_rate=learning_rate,
             num_epochs=self._epochs_spin.value(),
-            optimizer_name=OPTIMIZER_NAME,
             weight_decay=WEIGHT_DECAY,
             output_stats=train_dataset.get_output_stats(),
             normalise_targets=True,
             patience=EARLY_STOPPING_PATIENCE,
             test_loader=test_loader,
-            use_differential_lrs=self._is_transfer_architecture(architecture),
+            use_differential_lrs=adaptation == "ft" and self._is_transfer_architecture(architecture),
             use_cosine_schedule=True,
-            freeze_backbone_epochs=freeze_epochs,
             sum_penalty_weight=SUM_PENALTY_WEIGHT,
             adaptation=adaptation,
         )
@@ -1506,6 +1200,8 @@ class TrainPage(QWidget):
             self._continue_checkbox,
             self._continue_combo,
             self._architecture_combo,
+            self._adaptation_combo,
+            self._head_combo,
             self._split_mode_combo,
             self._epochs_spin,
         ):

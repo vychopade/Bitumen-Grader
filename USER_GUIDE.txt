@@ -35,6 +35,18 @@ Start the app:
 You should see four sidebar pages: Import Images, Train Model,
 Grade Images, and Model Library.
 
+To run the offline tests (or build a packaged app):
+
+    pip install -r requirements-dev.txt
+    python -m pytest tests/smoke_test.py -v
+    pyinstaller BitumenGrader.spec
+
+A packaged app saves models in the OS application-data folder
+(macOS: ~/Library/Application Support/BitumenGrader/models,
+Windows: %APPDATA%\BitumenGrader\models,
+Linux: ~/.bitumengrader/models).
+When you run from source, models stay in the project's models/ folder.
+
 
 3. GRADE IMAGES (EXISTING MODEL)
 --------------------------------
@@ -93,9 +105,17 @@ recipe from the froth-image study.
 
   Architecture (default Baseline CNN)
     Baseline CNN is trained from scratch and is the safest default.
-    ResNet50 / VGG16 start from ImageNet, fine-tune automatically, and are
-    optional. Transfer helped Solids in some setups and usually did not help
-    Bitumen.
+    ResNet50 / VGG16 start from ImageNet and are optional. Transfer helped
+    Solids in some setups and usually did not help Bitumen.
+
+  Adaptation (ResNet50 / VGG16)
+    Fine-tune trains the whole net (recommended; won the study's useful
+    transfer runs). Frozen features keep the ImageNet backbone fixed and
+    were weaker, especially for Bitumen.
+
+  Head (ResNet50 / VGG16)
+    Native = one linear layer. 2-layer (C2) is the custom head that helped
+    Solids. Deeper batch-norm heads are not offered; they collapse.
 
   Split (default Random)
     Random split measures interpolation within familiar runs. Experiment
@@ -104,7 +124,7 @@ recipe from the froth-image study.
 
   Continue training a saved model
     Loads that checkpoint and trains it further on the labels/folder you
-    pick. Architecture stays locked. A new file is saved.
+    pick. Architecture and head stay locked. A new file is saved.
 
   Epochs (default 100)
     How many full passes over the training images. Early stopping will
@@ -112,11 +132,12 @@ recipe from the froth-image study.
 
 Fixed behind the scenes (not shown in the UI):
 
-  Batch size 32, learning rate 0.0001, Adam, weight decay 0.0001
+  Batch size 32, Adam, weight decay 0.0001
+  Learning rate 0.0001 (baseline / fine-tune) or 0.001 (frozen features)
   Validation 20% / test 15%
   Images resized to 256×256 (legacy ResNet-18 stays at 224)
   Targets normalised, cosine LR schedule, composition sum penalty
-  Transfer models: ImageNet weights, 3 freeze-warmup epochs, lower backbone LR
+  Transfer models start from ImageNet weights
 
 
 6. EDITING IMAGES

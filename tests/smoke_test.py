@@ -311,7 +311,6 @@ def test_trainer_optimized_recipe_runs(tmp_path: Path) -> None:
         device=torch.device("cpu"),
         learning_rate=0.001,
         num_epochs=2,
-        optimizer_name="Adam",
         weight_decay=0.0001,
         output_stats=train_ds.get_output_stats(),
         normalise_targets=True,
@@ -446,7 +445,6 @@ def test_continue_training_from_checkpoint(tmp_path: Path) -> None:
         device=torch.device("cpu"),
         learning_rate=0.001,
         num_epochs=1,
-        optimizer_name="Adam",
         weight_decay=0.0001,
         output_stats=train_ds.get_output_stats(),
         normalise_targets=True,
@@ -479,7 +477,6 @@ def test_continue_training_from_checkpoint(tmp_path: Path) -> None:
         device=torch.device("cpu"),
         learning_rate=0.0001,
         num_epochs=1,
-        optimizer_name="Adam",
         weight_decay=0.0001,
         output_stats=train_ds.get_output_stats(),
         normalise_targets=True,
@@ -520,7 +517,6 @@ def test_feature_extraction_keeps_backbone_frozen(tmp_path: Path) -> None:
         device=torch.device("cpu"),
         learning_rate=0.001,
         num_epochs=2,
-        optimizer_name="Adam",
         weight_decay=0.0,
         output_stats=train_ds.get_output_stats(),
         normalise_targets=True,
@@ -551,3 +547,14 @@ def test_legacy_resnet18_round_trip(tmp_path: Path) -> None:
     with torch.no_grad():
         output = loaded(torch.rand(1, 3, 224, 224))
     assert output.shape == (1, 3)
+
+
+def test_source_checkout_paths() -> None:
+    """Unpackaged runs keep assets and models next to the project root."""
+    from app.paths import ASSETS_DIR, MODELS_DIR, bundle_dir, user_data_dir
+
+    root = Path(__file__).resolve().parent.parent
+    assert bundle_dir() == root
+    assert user_data_dir() == root
+    assert ASSETS_DIR == root / "assets"
+    assert MODELS_DIR == root / "models"

@@ -493,14 +493,6 @@ class ImageEditor(QWidget):
         self._update_preview()
         self._update_controls_enabled()
 
-    def current_image(self) -> Optional[Image.Image]:
-        """Current working image (may include unapplied edits)."""
-        return self._working_image
-
-    def has_pending_changes(self) -> bool:
-        """True if there are edits that haven't been applied yet."""
-        return self._dirty
-
     def clear(self) -> None:
         """Empty the editor."""
         self._original_image = None

@@ -1,8 +1,6 @@
-import logging
-
 import torch
 
-from app.constants import OUTPUT_NAMES
+from app.constants import OUTPUT_NAMES, SUM_DEVIATION_OK
 from app.ml.cnn_model import BitumenRegressor
 from app.utils.image_utils import (
     build_eval_transforms,
@@ -10,8 +8,6 @@ from app.utils.image_utils import (
     is_legacy_resnet18,
     prepare_image,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class RegressionPredictor:
@@ -72,15 +68,5 @@ class RegressionPredictor:
             "Bitumen": {"value": bitumen, "unit": "%"},
             "sum": total_sum,
             "sum_deviation": sum_deviation,
-            "sum_ok": sum_deviation < 5.0,
+            "sum_ok": sum_deviation < SUM_DEVIATION_OK,
         }
-
-    def predict_batch(self, image_paths) -> list:
-        results = []
-        for path in image_paths:
-            try:
-                results.append(self.predict(path))
-            except (OSError, ValueError) as exc:
-                logger.warning("Could not load image %r for prediction: %s", path, exc)
-                results.append(None)
-        return results

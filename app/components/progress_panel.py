@@ -28,11 +28,11 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QWidget,
 )
 
+from app.components.charts import style_axes
 from app.theme import (
     ACCENT_COLOR,
     BITUMEN_LINE_COLOR,
     BORDER_COLOR,
-    DANGER_COLOR,
     SOLIDS_LINE_COLOR,
     SUCCESS_BG,
     SUCCESS_COLOR,
@@ -43,6 +43,7 @@ from app.theme import (
     VAL_LINE_COLOR,
     WARNING_BG,
     WATER_LINE_COLOR,
+    sum_deviation_color,
 )
 
 PLACEHOLDER_VALUE = "\u2014"
@@ -198,7 +199,7 @@ class ProgressPanel(QWidget):
         self._loss_figure = Figure(figsize=(4, 2.2), dpi=100)
         self._loss_figure.patch.set_facecolor(SURFACE_COLOR)
         self._loss_axes = self._loss_figure.add_subplot(111)
-        self._style_axes(self._loss_axes, "Loss")
+        style_axes(self._loss_axes, "Loss", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
         self._loss_canvas = FigureCanvasQTAgg(self._loss_figure)
         self._loss_canvas.setFixedHeight(190)
         self._loss_canvas.setStyleSheet("background-color: transparent;")
@@ -207,23 +208,13 @@ class ProgressPanel(QWidget):
         self._mae_figure = Figure(figsize=(4, 2.2), dpi=100)
         self._mae_figure.patch.set_facecolor(SURFACE_COLOR)
         self._mae_axes = self._mae_figure.add_subplot(111)
-        self._style_axes(self._mae_axes, "MAE (%)")
+        style_axes(self._mae_axes, "MAE (%)", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
         self._mae_canvas = FigureCanvasQTAgg(self._mae_figure)
         self._mae_canvas.setFixedHeight(190)
         self._mae_canvas.setStyleSheet("background-color: transparent;")
         row.addWidget(self._mae_canvas, 1)
 
         return row
-
-    def _style_axes(self, axes, ylabel: str) -> None:
-        axes.clear()
-        axes.set_facecolor(SURFACE_COLOR)
-        axes.tick_params(colors=TEXT_SECONDARY, labelsize=8)
-        for spine in axes.spines.values():
-            spine.set_color(BORDER_COLOR)
-        axes.set_xlabel("Epoch", color=TEXT_SECONDARY, fontsize=8)
-        axes.set_ylabel(ylabel, color=TEXT_SECONDARY, fontsize=8)
-        axes.grid(True, color=BORDER_COLOR, linewidth=0.5, alpha=0.6)
 
     def _build_log(self) -> QTextEdit:
         self._log_view = QTextEdit()
@@ -325,9 +316,9 @@ class ProgressPanel(QWidget):
         )
 
         self._log_view.clear()
-        self._style_axes(self._loss_axes, "Loss")
+        style_axes(self._loss_axes, "Loss", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
         self._loss_canvas.draw_idle()
-        self._style_axes(self._mae_axes, "MAE (%)")
+        style_axes(self._mae_axes, "MAE (%)", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
         self._mae_canvas.draw_idle()
 
         self._completion_banner.setVisible(False)
@@ -374,14 +365,8 @@ class ProgressPanel(QWidget):
         self._metric_values["Bitumen MAE"].setText(f"\u00b1{bitumen:.2f}%")
 
         self._sum_dev_value.setText(f"\u00b1{val_sum_deviation:.2f}%")
-        if val_sum_deviation < 2.0:
-            dev_color = SUCCESS_COLOR
-        elif val_sum_deviation <= 5.0:
-            dev_color = ACCENT_COLOR
-        else:
-            dev_color = DANGER_COLOR
         self._sum_dev_value.setStyleSheet(
-            f"color: {dev_color}; font-size: 12px; font-weight: 700; background: transparent;"
+            f"color: {sum_deviation_color(val_sum_deviation)}; font-size: 12px; font-weight: 700; background: transparent;"
         )
 
         self._train_losses.append(train_loss)
@@ -471,7 +456,7 @@ class ProgressPanel(QWidget):
     # -- Internal helpers --------------------------------------------------
 
     def _redraw_loss_chart(self) -> None:
-        self._style_axes(self._loss_axes, "Loss")
+        style_axes(self._loss_axes, "Loss", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
         epochs = list(range(1, len(self._train_losses) + 1))
         self._loss_axes.plot(epochs, self._train_losses, color=ACCENT_COLOR, linewidth=1.6, label="Train")
         self._loss_axes.plot(epochs, self._val_losses, color=VAL_LINE_COLOR, linewidth=1.6, label="Val")
@@ -485,7 +470,7 @@ class ProgressPanel(QWidget):
         self._loss_canvas.draw_idle()
 
     def _redraw_mae_chart(self) -> None:
-        self._style_axes(self._mae_axes, "MAE (%)")
+        style_axes(self._mae_axes, "MAE (%)", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
         epochs = list(range(1, len(self._water_maes) + 1))
         self._mae_axes.plot(epochs, self._water_maes, color=WATER_LINE_COLOR, linewidth=1.6, label="Water")
         self._mae_axes.plot(epochs, self._solids_maes, color=SOLIDS_LINE_COLOR, linewidth=1.6, label="Solids")

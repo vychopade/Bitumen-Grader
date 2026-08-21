@@ -20,7 +20,6 @@ NUM_OUTPUTS = 3  # Water, Solids, Bitumen
 ARCHITECTURES = ("baseline", "resnet50", "vgg16", "resnet18")
 TRAINABLE_ARCHITECTURES = ("baseline", "resnet50", "vgg16")
 HEAD_TYPES = ("native", "c2")
-ADAPTATIONS = ("scratch", "ft", "fe")
 
 ARCHITECTURE_LABELS = {
     "baseline": "Baseline CNN (recommended)",

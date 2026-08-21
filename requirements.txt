@@ -5,6 +5,4 @@ Pillow
 numpy
 pandas
 openpyxl
-scikit-learn
 matplotlib
-pytest
