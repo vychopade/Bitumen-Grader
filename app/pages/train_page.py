@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QSizePolicy,
     QFrame,
@@ -44,9 +45,11 @@ from app.ml.cnn_model import (
 from app.ml.dataset import RegressionDataset
 from app.ml.recipe import (
     BATCH_SIZE,
+    DEFAULT_SPLIT_MODE,
     NUM_EPOCHS,
     TEST_FRACTION,
     VAL_FRACTION,
+    WEIGHT_DECAY,
     learning_rate_for_adaptation,
 )
 from app.ml.trainer import RegressionTrainer, RegressionTrainingResult
@@ -134,11 +137,12 @@ class TrainPage(QWidget):
         self._architecture_combo: Optional[QComboBox] = None
         self._adaptation_combo: Optional[QComboBox] = None
         self._head_combo: Optional[QComboBox] = None
-        self._split_mode_combo: Optional[QComboBox] = None
         self._strategy_note: Optional[QLabel] = None
         self._adaptation_label: Optional[QLabel] = None
         self._head_label: Optional[QLabel] = None
         self._epochs_spin: Optional[QSpinBox] = None
+        self._batch_size_spin: Optional[QSpinBox] = None
+        self._lr_spin: Optional[QDoubleSpinBox] = None
         self._start_button: Optional[QPushButton] = None
         self._stop_button: Optional[QPushButton] = None
         self._status_label: Optional[QLabel] = None
@@ -447,6 +451,7 @@ class TrainPage(QWidget):
             "Baseline CNN from scratch is the most robust default for froth images."
         )
         self._architecture_combo.currentIndexChanged.connect(self._on_strategy_changed)
+        self._architecture_combo.currentIndexChanged.connect(self._sync_learning_rate_from_adaptation)
         self._add_form_row(form, "Architecture", self._architecture_combo)
 
         self._adaptation_combo = QComboBox()
@@ -457,6 +462,7 @@ class TrainPage(QWidget):
             "Frozen features keep the backbone fixed and were weaker, especially for Bitumen."
         )
         self._adaptation_combo.currentIndexChanged.connect(self._on_strategy_changed)
+        self._adaptation_combo.currentIndexChanged.connect(self._sync_learning_rate_from_adaptation)
         self._adaptation_label = QLabel("Adaptation")
         self._adaptation_label.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;"
@@ -487,23 +493,34 @@ class TrainPage(QWidget):
         self._head_combo.setMinimumContentsLength(12)
         form.addRow(self._head_label, self._head_combo)
 
-        self._split_mode_combo = QComboBox()
-        self._split_mode_combo.addItem("Random split", "random")
-        self._split_mode_combo.addItem("Experiment hold-out", "experiment")
-        self._split_mode_combo.setToolTip(
-            "Random split interpolates within familiar runs. Experiment hold-out "
-            "keeps entire flotation campaigns out of training."
-        )
-        self._split_mode_combo.currentIndexChanged.connect(self._on_split_mode_changed)
-        self._add_form_row(form, "Split", self._split_mode_combo)
-
         self._epochs_spin = QSpinBox()
         self._epochs_spin.setRange(1, 200)
         self._epochs_spin.setValue(NUM_EPOCHS)
         self._epochs_spin.setToolTip(
-            "How many full passes over your data (100 in the study). The best validation R² checkpoint is kept."
+            "How many full passes over the training images (100 in the study). "
+            "The checkpoint with the best mean validation R² is kept even if a later epoch is worse."
         )
         self._add_form_row(form, "Epochs", self._epochs_spin)
+
+        self._batch_size_spin = QSpinBox()
+        self._batch_size_spin.setRange(1, 128)
+        self._batch_size_spin.setValue(BATCH_SIZE)
+        self._batch_size_spin.setToolTip(
+            "Images per Adam step (32 in the study). Lower this if you run out of memory; "
+            "higher is faster on GPU but needs more RAM. Last incomplete batch is still used."
+        )
+        self._add_form_row(form, "Batch size", self._batch_size_spin)
+
+        self._lr_spin = QDoubleSpinBox()
+        self._lr_spin.setDecimals(6)
+        self._lr_spin.setRange(1e-6, 0.1)
+        self._lr_spin.setSingleStep(1e-4)
+        self._lr_spin.setToolTip(
+            "Adam step size. The study used 0.0001 for baseline/fine-tune and 0.001 when the "
+            "backbone is frozen. Lower it if loss jumps around; raise it if loss barely moves. "
+            "Changing Adaptation resets this to the study value for that mode."
+        )
+        self._add_form_row(form, "Learning rate", self._lr_spin)
 
         layout.addLayout(form)
 
@@ -524,7 +541,7 @@ class TrainPage(QWidget):
                 border: 1px solid {BORDER_COLOR}; border-radius: 3px;
                 padding: 6px 28px 6px 10px; min-height: 26px;
             }}
-            QSpinBox {{
+            QSpinBox, QDoubleSpinBox {{
                 background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
                 border: 1px solid {BORDER_COLOR}; border-radius: 3px;
                 padding: 4px 22px 4px 8px; min-height: 26px;
@@ -533,6 +550,7 @@ class TrainPage(QWidget):
             """
         )
         self._on_strategy_changed()
+        self._sync_learning_rate_from_adaptation()
         return section
 
     def _add_form_row(self, form: QFormLayout, label_text: str, field: QWidget) -> None:
@@ -572,15 +590,26 @@ class TrainPage(QWidget):
         architecture = architecture or self._current_architecture()
         return architecture in {"resnet50", "vgg16", "resnet18"}
 
+    def _current_batch_size(self) -> int:
+        if self._batch_size_spin is None:
+            return BATCH_SIZE
+        return max(1, int(self._batch_size_spin.value()))
 
-    def _current_split_mode(self) -> str:
-        if self._split_mode_combo is None:
-            return "random"
-        data = self._split_mode_combo.currentData()
-        return str(data) if data else "random"
+    def _current_learning_rate(self, adaptation: Optional[str] = None) -> float:
+        if self._lr_spin is None:
+            return learning_rate_for_adaptation(adaptation or self._current_adaptation())
+        return float(self._lr_spin.value())
 
-    def _on_split_mode_changed(self, _index: int = 0) -> None:
-        self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
+    def _sync_learning_rate_from_adaptation(self, *_args) -> None:
+        """Fill Adam LR with the study value for the current Adaptation mode."""
+        if self._lr_spin is None:
+            return
+        if self._is_transfer_architecture() and self._adaptation_combo is not None:
+            data = self._adaptation_combo.currentData()
+            mode = str(data) if data else "ft"
+        else:
+            mode = "scratch"
+        self._lr_spin.setValue(learning_rate_for_adaptation(mode))
 
     def _on_continue_toggled(self, checked: bool) -> None:
         if self._continue_combo is not None:
@@ -713,14 +742,17 @@ class TrainPage(QWidget):
             elif is_baseline:
                 self._strategy_note.setText(
                     "Baseline CNN trained from scratch is the most robust default for froth images. "
-                    "Training follows the study recipe: Adam, MSE on percentages, 100 epochs, "
-                    "checkpointed on validation R². Prefer an experiment hold-out before a new campaign."
+                    "Defaults follow the study recipe (Adam, MSE, batch 32, 100 epochs, LR 0.0001). "
+                    "Epochs, batch size, and learning rate can be changed below; the best validation "
+                    "R² checkpoint is still kept. Whole flotation campaigns are held out of training "
+                    "when two or more are found."
                 )
             else:
                 self._strategy_note.setText(
-                    "ImageNet transfer is optional and mainly helps Solids. Fine-tuning (1e-4) beat frozen "
-                    "features (1e-3) in the study; the 2-layer (C2) head is the custom head that helped Solids. "
-                    "Compare against the baseline under an experiment hold-out before deploying."
+                    "ImageNet transfer is optional and mainly helps Solids. Fine-tuning (LR 0.0001) beat "
+                    "frozen features (LR 0.001) in the study; Adaptation sets that learning rate unless "
+                    "you override it. The 2-layer (C2) head is the custom head that helped Solids. "
+                    "Compare against the baseline before deploying."
                 )
 
     # -- CSV / folder / dataset summary --------------------------------------
@@ -819,7 +851,7 @@ class TrainPage(QWidget):
             "test_fraction": TEST_FRACTION,
             "normalise": normalise,
             "seed": 42,
-            "split_mode": self._current_split_mode(),
+            "split_mode": DEFAULT_SPLIT_MODE,
             "image_size": image_size,
             "legacy_crop": legacy_crop,
         }
@@ -983,11 +1015,12 @@ class TrainPage(QWidget):
         if device.type == "cuda":
             loader_kwargs["pin_memory"] = True
 
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, **loader_kwargs)
-        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, **loader_kwargs)
+        batch_size = self._current_batch_size()
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs)
         test_loader = None
         if len(test_dataset) > 0:
-            test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, **loader_kwargs)
+            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs)
 
         architecture = self._current_architecture()
         head = self._current_head()
@@ -1015,8 +1048,9 @@ class TrainPage(QWidget):
             train_loader=train_loader,
             val_loader=val_loader,
             device=device,
-            learning_rate=learning_rate_for_adaptation(adaptation),
-            num_epochs=self._epochs_spin.value(),
+            learning_rate=self._current_learning_rate(adaptation),
+            num_epochs=self._epochs_spin.value() if self._epochs_spin is not None else NUM_EPOCHS,
+            weight_decay=WEIGHT_DECAY,
             output_stats=train_dataset.get_output_stats(),
             normalise_targets=bool(kwargs["normalise"]),
             patience=0,
@@ -1039,6 +1073,11 @@ class TrainPage(QWidget):
             "parent_model_path": (parent_meta or {}).get("model_path") if continuing else None,
             "recipe": "prince_prasad_table2",
             "normalise_targets": bool(kwargs["normalise"]),
+            "epochs": trainer.num_epochs,
+            "batch_size": batch_size,
+            "learning_rate": trainer.learning_rate,
+            "weight_decay": trainer.weight_decay,
+            "patience": trainer.patience,
         }
         self._launch_training_thread(trainer)
 
@@ -1160,8 +1199,9 @@ class TrainPage(QWidget):
             self._architecture_combo,
             self._adaptation_combo,
             self._head_combo,
-            self._split_mode_combo,
             self._epochs_spin,
+            self._batch_size_spin,
+            self._lr_spin,
         ):
             if widget is not None:
                 widget.setEnabled(not active)

@@ -19,6 +19,10 @@ WEIGHT_DECAY = 0.0
 # 20% of the remaining 80% is carved out as validation for checkpointing.
 TEST_FRACTION = 0.20
 VAL_FRACTION = 0.16
+# Prefer holding out whole flotation campaigns (Case 2). That is closer to
+# grading a new plant run than shuffling images. Falls back to a random
+# image split when fewer than two campaigns are found.
+DEFAULT_SPLIT_MODE = "experiment"
 CLS_BINS = 3  # equal-frequency bins (classification endpoint in the paper)
 OUTPUT_ORDER: Sequence[str] = ("Water", "Solids", "Bitumen")
 

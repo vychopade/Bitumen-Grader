@@ -560,6 +560,7 @@ def test_paper_recipe_constants() -> None:
     from app.ml.recipe import (
         BATCH_SIZE,
         CLS_BINS,
+        DEFAULT_SPLIT_MODE,
         LEARNING_RATE_FE,
         LEARNING_RATE_FT,
         NUM_EPOCHS,
@@ -574,6 +575,7 @@ def test_paper_recipe_constants() -> None:
     assert LEARNING_RATE_FT == 1e-4
     assert LEARNING_RATE_FE == 1e-3
     assert WEIGHT_DECAY == 0.0
+    assert DEFAULT_SPLIT_MODE == "experiment"
     assert CLS_BINS == 3
     assert abs(TEST_FRACTION - 0.20) < 1e-9
     assert abs(VAL_FRACTION - 0.16) < 1e-9

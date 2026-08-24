@@ -71,7 +71,7 @@ When you run from source, models stay in the project's models/ folder.
 You need:
   - A CSV/Excel file with columns: Image, Pan, Water, Solids, Bitumen
     (Image = filename; extension optional). An optional Campaign / Experiment /
-    Run column is used if you pick the experiment hold-out split.
+    Run column is used to hold whole flotation campaigns out of training.
   - A folder of those photos
   - Ideally 50+ images per Pan grade (200+ is better). Mix lighting and
     framing a bit so the model isn't too picky later.
@@ -81,7 +81,7 @@ Steps:
 2. Drop or choose the photo folder. Nested folders are included. Check the
    match summary; fix unmatched names if the match rate is low.
 3. Review the dataset summary (train / validation / test counts, ranges,
-   Pan distribution, and campaigns if you use experiment hold-out).
+   Pan distribution, and which campaigns landed in each split).
 4. Name the model. Leave Architecture on Baseline CNN unless you have a
    reason to try ImageNet transfer (mainly for Solids).
 5. Optional: check "Continue training a saved model" to keep training an
@@ -95,7 +95,7 @@ Steps:
 The default is a compact CNN trained from scratch on froth photos. That
 is more robust on this kind of image than starting from ImageNet. ResNet50
 and VGG16 transfer are optional second-stage experiments; compare them to
-the baseline with an experiment hold-out split before you rely on them.
+the baseline before you rely on them.
 
 
 5. TRAINING SETTINGS
@@ -118,12 +118,6 @@ Prince & Prasad froth-image recipe (their Table 2).
     Native = one linear layer. 2-layer (C2) is the custom head that helped
     Solids. Deeper batch-norm heads are not offered; they collapse.
 
-  Split (default Random)
-    Random split is an 80/20-style image split (64% train / 16% val / 20%
-    test). Experiment hold-out keeps whole flotation campaigns (from the
-    filename, e.g. N12, or a Campaign column) out of training — closer to
-    a new plant run.
-
   Continue training a saved model
     Loads that checkpoint and trains it further on the labels/folder you
     pick. Architecture and head stay locked. A new file is saved.
@@ -133,10 +127,21 @@ Prince & Prasad froth-image recipe (their Table 2).
     full 100 epochs; the app keeps the checkpoint with the best mean
     validation R². You can still Stop Training at any time.
 
+  Batch size (default 32)
+    How many photos Adam sees in one step. The study used 32. Drop this
+    if training runs out of memory. Raising it can speed up a GPU run.
+
+  Learning rate (default 0.0001, or 0.001 for frozen features)
+    Size of each Adam update. Adaptation fills in the study value:
+    0.0001 for baseline / fine-tune, 0.001 when the backbone is frozen.
+    Lower it if loss spikes; raise it if loss barely moves.
+
 Fixed behind the scenes (not shown in the UI):
 
-  Batch size 32, Adam, constant learning rate, no weight decay
-  Learning rate 0.0001 (baseline / fine-tune) or 0.001 (frozen features)
+  Campaign hold-out split when two or more flotation runs are found
+    (from a Campaign/Experiment/Run column, or _N12 in the filename).
+    Falls back to a random 64/16/20 image split if only one campaign exists.
+  Adam with a constant learning rate, no weight decay, no early stopping
   MSE on raw Water / Solids / Bitumen percentages (no z-score, no sum penalty)
   Images resized to 256×256; only left-right and up-down flips
   Best checkpoint selected by validation R² (the study's regression metric)
