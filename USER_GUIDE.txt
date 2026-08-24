@@ -32,8 +32,7 @@ Start the app:
 
     python main.py
 
-You should see four sidebar pages: Import Images, Train Model,
-Grade Images, and Model Library.
+You should see three sidebar pages: Train, Grade, and Models.
 
 To run the offline tests (or build a packaged app):
 
@@ -48,20 +47,22 @@ Linux: ~/.bitumengrader/models).
 When you run from source, models stay in the project's models/ folder.
 
 
-3. GRADE IMAGES (EXISTING MODEL)
+3. GRADE PHOTOS (EXISTING MODEL)
 --------------------------------
 
-1. Open Model Library and click Load Model on the card you want.
-2. Go to Grade Images.
-3. Add photos (Add Images, or drag and drop). JPG, PNG, and TIF work.
-4. Click Grade All, or pick one image and click Grade This Image.
+1. Open Models and click Load on the card you want. The loaded name
+   shows at the bottom of the sidebar; click it to switch.
+2. Go to Grade.
+3. Choose files, open a folder, or drop photos/folders onto the queue.
+   JPG, PNG, and TIF (including TIFF) work. Nested folders are included.
+4. Click Grade all, or pick one photo and click Grade this photo.
 5. Check the results:
    - Water / Solids / Bitumen percentages
    - Sum row: green if close to 100%, amber if a bit off, red if more
      than about 5% off
    - Closest Pan grade (rough, from Bitumen %)
 6. Export CSV if you want a spreadsheet of the batch.
-7. Clear Results (or Clear All) when you're done with that batch.
+7. Clear results (or Clear queue) when you're done with that batch.
 
 
 4. TRAIN A NEW MODEL
@@ -76,9 +77,9 @@ You need:
     framing a bit so the model isn't too picky later.
 
 Steps:
-1. Train Model → load the labels file (drop zone or Browse).
-2. Select the image folder. Check the match summary; fix unmatched names
-   if the match rate is low.
+1. Train → load the labels table (drop a .csv/.xlsx/.xls/.txt, or choose a file).
+2. Drop or choose the photo folder. Nested folders are included. Check the
+   match summary; fix unmatched names if the match rate is low.
 3. Review the dataset summary (train / validation / test counts, ranges,
    Pan distribution, and campaigns if you use experiment hold-out).
 4. Name the model. Leave Architecture on Baseline CNN unless you have a
@@ -86,8 +87,8 @@ Steps:
 5. Optional: check "Continue training a saved model" to keep training an
    existing checkpoint on this new dataset. That saves a new model and
    leaves the original in the library.
-6. Start Training. Watch loss/MAE charts and the log. You can Stop
-   Training anytime; the best checkpoint so far is kept.
+6. Start training. Watch loss and R² charts and the log. You can Stop
+   anytime; the best validation R² checkpoint so far is kept.
 7. When it finishes, the model is saved and set as active. Go grade
    some photos to try it.
 
@@ -101,7 +102,7 @@ the baseline with an experiment hold-out split before you rely on them.
 --------------------
 
 Only a few choices are on the Train page. Everything else is locked to the
-recipe from the froth-image study.
+Prince & Prasad froth-image recipe (their Table 2).
 
   Architecture (default Baseline CNN)
     Baseline CNN is trained from scratch and is the safest default.
@@ -109,75 +110,70 @@ recipe from the froth-image study.
     Solids in some setups and usually did not help Bitumen.
 
   Adaptation (ResNet50 / VGG16)
-    Fine-tune trains the whole net (recommended; won the study's useful
-    transfer runs). Frozen features keep the ImageNet backbone fixed and
-    were weaker, especially for Bitumen.
+    Fine-tune trains the whole net at 1e-4 (recommended; won the study's
+    useful transfer runs). Frozen features keep the ImageNet backbone fixed
+    and train only the head at 1e-3; that was weaker, especially for Bitumen.
 
   Head (ResNet50 / VGG16)
     Native = one linear layer. 2-layer (C2) is the custom head that helped
     Solids. Deeper batch-norm heads are not offered; they collapse.
 
   Split (default Random)
-    Random split measures interpolation within familiar runs. Experiment
-    hold-out keeps whole flotation campaigns (from the filename, e.g. N12,
-    or a Campaign column) out of training — closer to a new plant run.
+    Random split is an 80/20-style image split (64% train / 16% val / 20%
+    test). Experiment hold-out keeps whole flotation campaigns (from the
+    filename, e.g. N12, or a Campaign column) out of training — closer to
+    a new plant run.
 
   Continue training a saved model
     Loads that checkpoint and trains it further on the labels/folder you
     pick. Architecture and head stay locked. A new file is saved.
 
   Epochs (default 100)
-    How many full passes over the training images. Early stopping will
-    halt sooner if validation stops improving for 10 epochs.
+    How many full passes over the training images. The study trained the
+    full 100 epochs; the app keeps the checkpoint with the best mean
+    validation R². You can still Stop Training at any time.
 
 Fixed behind the scenes (not shown in the UI):
 
-  Batch size 32, Adam, weight decay 0.0001
+  Batch size 32, Adam, constant learning rate, no weight decay
   Learning rate 0.0001 (baseline / fine-tune) or 0.001 (frozen features)
-  Validation 20% / test 15%
-  Images resized to 256×256 (legacy ResNet-18 stays at 224)
-  Targets normalised, cosine LR schedule, composition sum penalty
+  MSE on raw Water / Solids / Bitumen percentages (no z-score, no sum penalty)
+  Images resized to 256×256; only left-right and up-down flips
+  Best checkpoint selected by validation R² (the study's regression metric)
+  3-bin equal-frequency accuracy is recorded as a diagnostic
   Transfer models start from ImageNet weights
 
 
-6. EDITING IMAGES
------------------
+6. MODELS
+---------
 
-On Import Images you can crop, flip, and rotate before sending photos to
-training or grading. Apply Changes saves the edit; Reset undoes it.
+Each trained model is saved under models/ as a .pt (weights) and a .json
+(stats and history). Cards show architecture, validation R², and test R²
+when available. Retrain continues that checkpoint on a new labelled dataset
+(Train page) and writes a new file.
 
-Send to Training opens Train Model and fills Step 2 with that photo folder
-(you still need the labels file). Send to Grading opens Grade Images and
-adds the photos to the queue.
-
-
-7. MODEL LIBRARY
-----------------
-
-Each trained model is saved under models/ as a .pt (weights) and .json
-(stats and history). Cards show architecture, val MAE, and test MAE when
-available. Retrain continues that checkpoint on a new labelled dataset
-(Train Model page) and writes a new file.
-
-Load Model sets it for grading. Delete removes that model for good.
+Load sets it for grading. Delete removes that model for good.
 
 
-8. READING RESULTS
+7. READING RESULTS
 ------------------
 
-MAE (±X%) is the average absolute error vs lab labels on the validation
-or test set. Smaller is better. Compare across your own models rather
-than chasing a universal "good" number.
+R² is the study's regression score: 1.0 is a perfect fit, 0.0 is no better
+than predicting the mean, and a negative value means the model is worse
+than that mean (a failed transfer in the paper). Compare R² across your
+own models.
+
+MAE (±X%) is the average absolute error vs lab labels. Smaller is better.
 
 Sum check: how far Water+Solids+Bitumen is from 100%. Under ~2% is
 tight; over ~5% means treat that photo carefully (bad lighting, odd
 crop, etc.).
 
-If MAE is high: more/varied photos, cleaner labels, longer training, or
-crop backgrounds. See the settings above.
+If R² is low or MAE is high: more/varied photos, cleaner labels, longer
+training, or crop backgrounds. See the settings above.
 
 
-9. TROUBLESHOOTING
+8. TROUBLESHOOTING
 ------------------
 
   Won't start
@@ -191,9 +187,11 @@ crop backgrounds. See the settings above.
 
   High MAE / weird grades
     Check CSV values, add more photos, raise epochs, improve framing.
+    A negative R² on the test split is a warning the model did not learn.
 
-  Import fails
-    Use JPG/PNG/TIF. Broken files are skipped with a message.
+  Photos or tables won't open
+    Use JPG/PNG/TIF for photos and CSV/Excel/TXT for labels. Nested
+    folders are included. Broken files are skipped with a message.
 
 
 ════════════════════════════════════════════════════════

@@ -3,24 +3,25 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFontMetrics, QPainter, QResizeEvent
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFontMetrics, QImage, QPainter, QPixmap, QResizeEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from app.components.drop_zone import dropped_local_paths
-from app.components.image_editor import pil_to_qpixmap
+from app.components.drop_zone import drop_has_accepted_files, dropped_local_paths
 from app.constants import IMAGE_EXTENSIONS
 from app.ml.predictor import RegressionPredictor
 from app.theme import (
@@ -33,7 +34,18 @@ from app.theme import (
     TEXT_SECONDARY,
     WATER_LINE_COLOR,
     drop_zone_qss,
+    ghost_button_qss,
+    link_button_qss,
 )
+from app.utils.files import pick_image_files, pick_image_folder
+from app.utils.media import collect_images
+
+
+def pil_to_qpixmap(image: Image.Image) -> QPixmap:
+    rgba = image.convert("RGBA")
+    data = rgba.tobytes("raw", "RGBA")
+    qimage = QImage(data, rgba.width, rgba.height, QImage.Format.Format_RGBA8888)
+    return QPixmap.fromImage(qimage.copy())
 
 THUMB_SIZE = 64
 PAN_GRADES = (3, 4, 5, 6)
@@ -87,9 +99,9 @@ class _GradingWorker(QObject):
 
         results: List[Any] = []
         failures = 0
-        for image_id, pil_image in self._images:
+        for image_id, source in self._images:
             try:
-                result = self._predictor.predict(pil_image)
+                result = self._predictor.predict(source)
             except Exception:  # noqa: BLE001 - keep grading remaining images
                 failures += 1
                 results.append((image_id, None))
@@ -125,51 +137,42 @@ class _ExportWorker(QObject):
 
 @dataclass
 class _QueueImage:
-    """One queued image plus its list-row widgets."""
+    """One queued photo (path on disk) plus its list-row widgets."""
 
     id: int
     path: str
-    image: Image.Image
     item: QListWidgetItem
     widget: "_QueueItemWidget"
     result: Optional[Dict[str, Any]] = None
-    #: output_stats from the model at grade time, so a later model change
-    #: doesn't rewrite comparisons without re-grading.
     output_stats: Optional[Dict[str, Dict[str, float]]] = None
 
 
 class _QueueItemWidget(QWidget):
-    """Queue row: 64×64 thumbnail + filename."""
+    """Queue row: filename, elided to the current row width."""
 
-    def __init__(self, filename: str, pil_image: Image.Image, parent: Optional[QWidget] = None):
+    def __init__(self, filename: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._filename = filename
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(10)
 
-        self._thumb_label = QLabel()
-        self._thumb_label.setFixedSize(THUMB_SIZE, THUMB_SIZE)
-        self._thumb_label.setStyleSheet(f"background-color: {BACKGROUND_COLOR}; border-radius: 4px;")
-        self._thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._set_thumbnail(pil_image)
-        layout.addWidget(self._thumb_label)
+        self._name_label = QLabel()
+        self._name_label.setToolTip(filename)
+        self._name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._name_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
+        layout.addWidget(self._name_label, 1)
+        self._elide_name()
 
-        name_label = QLabel()
-        metrics = QFontMetrics(name_label.font())
-        name_label.setText(metrics.elidedText(filename, Qt.TextElideMode.ElideMiddle, 200))
-        name_label.setToolTip(filename)
-        name_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
-        layout.addWidget(name_label, 1)
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._elide_name()
 
-    def _set_thumbnail(self, pil_image: Image.Image) -> None:
-        pixmap = pil_to_qpixmap(pil_image).scaled(
-            THUMB_SIZE,
-            THUMB_SIZE,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self._thumb_label.setPixmap(pixmap)
+    def _elide_name(self) -> None:
+        metrics = QFontMetrics(self._name_label.font())
+        width = max(40, self._name_label.width())
+        self._name_label.setText(metrics.elidedText(self._filename, Qt.TextElideMode.ElideMiddle, width))
 
 
 class _QueueList(QListWidget):
@@ -182,7 +185,7 @@ class _QueueList(QListWidget):
         self.setAcceptDrops(True)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if dropped_local_paths(event, IMAGE_EXTENSIONS):
+        if drop_has_accepted_files(event, IMAGE_EXTENSIONS, recurse_dirs=True):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -191,7 +194,7 @@ class _QueueList(QListWidget):
         event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        paths = dropped_local_paths(event, IMAGE_EXTENSIONS)
+        paths = dropped_local_paths(event, IMAGE_EXTENSIONS, recurse_dirs=True)
         if paths:
             self.files_dropped.emit(paths)
             event.acceptProposedAction()
@@ -200,7 +203,7 @@ class _QueueList(QListWidget):
 
 
 class _ImageDropZone(QFrame):
-    """Dashed drop area for grading images (use Add Images for the file picker)."""
+    """Drop photos or a folder here, or choose files/folder."""
 
     files_selected = pyqtSignal(list)
 
@@ -208,31 +211,63 @@ class _ImageDropZone(QFrame):
         super().__init__(parent)
         self.setObjectName("gradeDropZone")
         self.setAcceptDrops(True)
-        self.setFixedHeight(84)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._build_ui()
         self._apply_style(active=False)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(4)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(6)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("Drop images here")
+        title = QLabel("Drop photos or a folder here")
+        title.setWordWrap(True)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600; background: transparent;")
+        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
         layout.addWidget(title)
 
         subtitle = QLabel("JPG, PNG, or TIF")
+        subtitle.setWordWrap(True)
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 10px; background: transparent;")
+        subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         layout.addWidget(subtitle)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(12)
+        button_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.browse_button = QPushButton("Choose files")
+        self.browse_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.browse_button.setStyleSheet(ghost_button_qss())
+        self.browse_button.clicked.connect(self._browse_files)
+        button_row.addWidget(self.browse_button)
+
+        self.browse_folder_button = QPushButton("Open folder")
+        self.browse_folder_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.browse_folder_button.setStyleSheet(link_button_qss())
+        self.browse_folder_button.clicked.connect(self._browse_folder)
+        button_row.addWidget(self.browse_folder_button)
+
+        layout.addLayout(button_row)
 
     def _apply_style(self, active: bool) -> None:
         self.setStyleSheet(drop_zone_qss("gradeDropZone", active=active))
 
+    def _browse_files(self) -> None:
+        paths = pick_image_files(self)
+        if paths:
+            self.files_selected.emit(paths)
+
+    def _browse_folder(self) -> None:
+        folder = pick_image_folder(self)
+        if not folder:
+            return
+        paths = collect_images(folder)
+        self.files_selected.emit(paths)
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if dropped_local_paths(event, IMAGE_EXTENSIONS):
+        if drop_has_accepted_files(event, IMAGE_EXTENSIONS, recurse_dirs=True):
             event.acceptProposedAction()
             self._apply_style(active=True)
         else:
@@ -243,7 +278,7 @@ class _ImageDropZone(QFrame):
 
     def dropEvent(self, event: QDropEvent) -> None:
         self._apply_style(active=False)
-        paths = dropped_local_paths(event, IMAGE_EXTENSIONS)
+        paths = dropped_local_paths(event, IMAGE_EXTENSIONS, recurse_dirs=True)
         if paths:
             self.files_selected.emit(paths)
             event.acceptProposedAction()
@@ -304,9 +339,9 @@ class _RangeBar(QWidget):
         self._low = low
         self._high = high
         self._value = value
-        self.setFixedHeight(58)
+        self.setMinimumHeight(64)
         self.setMinimumWidth(200)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
     def paintEvent(self, event) -> None:  # noqa: D401 - Qt override
         painter = QPainter(self)
@@ -356,26 +391,20 @@ class _RangeBar(QWidget):
         painter.setPen(QColor(TEXT_PRIMARY))
         value_width = 56
         value_x = min(max(marker_x - value_width / 2, track_left), track_right - value_width)
-        painter.drawText(
-            QRectF(value_x, labels_top, value_width, bottom_label_height),
-            Qt.AlignmentFlag.AlignHCenter,
-            value_text,
-        )
+        value_rect = QRectF(value_x, labels_top, value_width, bottom_label_height)
+        painter.drawText(value_rect, Qt.AlignmentFlag.AlignHCenter, value_text)
 
         font.setBold(False)
         font.setPointSize(8)
         painter.setFont(font)
         painter.setPen(QColor(TEXT_SECONDARY))
-        painter.drawText(
-            QRectF(track_left, labels_top, 60, bottom_label_height),
-            Qt.AlignmentFlag.AlignLeft,
-            f"{self._low:.2f}%",
-        )
-        painter.drawText(
-            QRectF(track_right - 60, labels_top, 60, bottom_label_height),
-            Qt.AlignmentFlag.AlignRight,
-            f"{self._high:.2f}%",
-        )
+        min_rect = QRectF(track_left, labels_top, 60, bottom_label_height)
+        max_rect = QRectF(track_right - 60, labels_top, 60, bottom_label_height)
+        overlap_pad = value_rect.adjusted(-6, 0, 6, 0)
+        if not min_rect.intersects(overlap_pad):
+            painter.drawText(min_rect, Qt.AlignmentFlag.AlignLeft, f"{self._low:.2f}%")
+        if not max_rect.intersects(overlap_pad):
+            painter.drawText(max_rect, Qt.AlignmentFlag.AlignRight, f"{self._high:.2f}%")
 
         painter.end()
 
@@ -393,6 +422,7 @@ class _PanGradeCard(QFrame):
         layout.setSpacing(4)
 
         self._title_label = QLabel("")
+        self._title_label.setWordWrap(True)
         self._title_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent;")
         layout.addWidget(self._title_label)
 

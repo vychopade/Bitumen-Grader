@@ -73,19 +73,16 @@ def _square_resize(image_size: int) -> transforms.Resize:
 
 
 def build_train_transforms(image_size: int = IMAGE_SIZE) -> transforms.Compose:
-    """Augment after the photo has already been resized to ``image_size`` × ``image_size``."""
+    """Resize to the study input (256×256) with only orientation flips.
+
+    Froth signal lives in colour, texture, and bubble packing, so colour jitter
+    and random zoom are omitted — they erase the cues the model needs.
+    """
     return transforms.Compose(
         [
             _square_resize(image_size),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
-            # Zoom on the standardized square; output stays image_size × image_size.
-            transforms.RandomResizedCrop(
-                image_size,
-                scale=(0.8, 1.0),
-                interpolation=_INTERPOLATION,
-            ),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
             transforms.ToTensor(),
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]

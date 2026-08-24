@@ -4,9 +4,6 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from tempfile import gettempdir
-
-from app.constants import EDITED_IMAGES_DIR_NAME
 
 APP_NAME = "BitumenGrader"
 
@@ -42,8 +39,3 @@ def user_data_dir() -> Path:
 PROJECT_ROOT = bundle_dir()
 ASSETS_DIR = PROJECT_ROOT / "assets"
 MODELS_DIR = user_data_dir() / "models"
-
-
-def edited_images_dir() -> Path:
-    """Temp folder for cropped/flipped imports so training still reads from disk."""
-    return Path(gettempdir()) / EDITED_IMAGES_DIR_NAME

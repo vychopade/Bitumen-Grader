@@ -1,34 +1,28 @@
 """
 Main window for BitumenGrader.
 
-Sidebar + stacked pages (Import, Train, Grade, Model Library). Owns the
-app-wide ``active_model`` (path, metadata, ready ``RegressionPredictor``)
-and broadcasts ``active_model_changed`` when it changes.
+Sidebar + stacked pages (Train, Grade, Models). Owns the app-wide
+``active_model`` (path, metadata, ready ``RegressionPredictor``) and
+broadcasts ``active_model_changed`` when it changes.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import QPointF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import (
-    QColor,
     QFont,
     QFontDatabase,
     QFontMetrics,
     QGuiApplication,
     QIcon,
     QKeySequence,
-    QPainter,
-    QPen,
-    QPixmap,
-    QPolygonF,
 )
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QFrame,
     QHBoxLayout,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -38,107 +32,44 @@ from PyQt6.QtWidgets import (
 )
 
 from app.ml.predictor import RegressionPredictor
-from app.pages import GradePage, ImportPage, LibraryPage, TrainPage
+from app.pages import GradePage, LibraryPage, TrainPage
 from app.paths import ASSETS_DIR
-from app.theme import ACCENT_COLOR, TEXT_PRIMARY, TEXT_SECONDARY
+from app.theme import TEXT_PRIMARY
 
-SIDEBAR_WIDTH = 220
+SIDEBAR_WIDTH = 148
 WINDOW_MIN_WIDTH = 1100
 WINDOW_MIN_HEIGHT = 720
 WINDOW_TITLE_BASE = "BitumenGrader"
 
 _LOGO_PATH = ASSETS_DIR / "logo.png"
 
-_FALLBACK_FONT_FAMILIES = ("Segoe UI", "Helvetica Neue", "Arial", "Roboto", "Ubuntu")
+_FALLBACK_FONT_FAMILIES = ("Segoe UI", "Helvetica Neue", ".AppleSystemUIFont", "Arial", "Ubuntu")
 
-#: (key, label, icon kind, page class) for each sidebar item.
+#: (key, label, page class) for each sidebar item.
 _NAV_ITEMS = [
-    ("import", "Import Images", "import", ImportPage),
-    ("train", "Train Model", "train", TrainPage),
-    ("grade", "Grade Images", "grade", GradePage),
-    ("library", "Model Library", "library", LibraryPage),
+    ("train", "Train", TrainPage),
+    ("grade", "Grade", GradePage),
+    ("library", "Models", LibraryPage),
 ]
 
-#: Alt+letter shortcuts for sidebar nav. Pages should not reuse these letters.
-NAV_SHORTCUT_LETTERS = {"import": "I", "train": "T", "grade": "G", "library": "L"}
+#: Alt+letter shortcuts for sidebar nav.
+NAV_SHORTCUT_LETTERS = {"train": "T", "grade": "G", "library": "L"}
 
 
 def _resolve_font_family() -> str:
-    """Prefer Inter if installed; otherwise a common sans-serif."""
+    """Use a common system sans-serif. Skip Inter — it reads as a product site."""
     families = set(QFontDatabase.families())
-    if "Inter" in families:
-        return "Inter"
     for fallback in _FALLBACK_FONT_FAMILIES:
         if fallback in families:
             return fallback
     return QFont().defaultFamily()
 
 
-def _build_nav_icon(kind: str, color: str, size: int = 18) -> QIcon:
-    """Small flat sidebar icon drawn with QPainter (no image assets)."""
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    pen = QPen(QColor(color))
-    pen.setWidthF(1.6)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-
-    margin = size * 0.18
-
-    if kind == "import":
-        # Upload arrow over a tray.
-        mid_x = size / 2
-        painter.drawLine(QPointF(mid_x, size - margin), QPointF(mid_x, margin))
-        arrow = QPolygonF(
-            [
-                QPointF(mid_x - size * 0.22, margin + size * 0.28),
-                QPointF(mid_x, margin),
-                QPointF(mid_x + size * 0.22, margin + size * 0.28),
-            ]
-        )
-        painter.drawPolyline(arrow)
-        painter.drawLine(QPointF(margin, size - margin), QPointF(size - margin, size - margin))
-    elif kind == "train":
-        # Play triangle in a circle.
-        center = QPointF(size / 2, size / 2)
-        painter.drawEllipse(center, size / 2 - margin * 0.4, size / 2 - margin * 0.4)
-        triangle = QPolygonF(
-            [
-                QPointF(size * 0.40, size * 0.32),
-                QPointF(size * 0.40, size * 0.68),
-                QPointF(size * 0.72, size * 0.50),
-            ]
-        )
-        painter.setBrush(QColor(color))
-        painter.drawPolygon(triangle)
-    elif kind == "grade":
-        # Magnifying glass.
-        radius = size * 0.28
-        center = QPointF(size * 0.42, size * 0.42)
-        painter.drawEllipse(center, radius, radius)
-        handle_start = QPointF(center.x() + radius * 0.75, center.y() + radius * 0.75)
-        handle_end = QPointF(size - margin * 0.6, size - margin * 0.6)
-        painter.drawLine(handle_start, handle_end)
-    elif kind == "library":
-        # Stacked lines = saved models.
-        for index, y in enumerate((size * 0.28, size * 0.5, size * 0.72)):
-            inset = index * size * 0.06
-            painter.drawLine(QPointF(margin + inset, y), QPointF(size - margin - inset, y))
-
-    painter.end()
-    return QIcon(pixmap)
-
-
 class _Sidebar(QWidget):
-    """Left nav: brand area, page links, status pill."""
+    """Left nav: page names and the active model."""
 
     nav_selected = pyqtSignal(int)
+    library_requested = pyqtSignal()
 
     def __init__(self, font_family: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -149,77 +80,46 @@ class _Sidebar(QWidget):
         self._nav_buttons: List[QPushButton] = []
         self._button_group = QButtonGroup(self)
         self._button_group.setExclusive(True)
-        self._status_dot: Optional[QLabel] = None
-        self._status_label: Optional[QLabel] = None
-        self._status_secondary_label: Optional[QLabel] = None
+        self._status_button: Optional[QPushButton] = None
 
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 24, 0, 16)
+        layout.setContentsMargins(0, 16, 0, 8)
         layout.setSpacing(0)
 
-        for index, (key, label, icon_kind, _page_cls) in enumerate(_NAV_ITEMS):
-            button = self._build_nav_button(label, icon_kind, index, key)
+        for index, (key, label, _page_cls) in enumerate(_NAV_ITEMS):
+            button = self._build_nav_button(label, index, key)
             layout.addWidget(button)
             self._nav_buttons.append(button)
 
         layout.addStretch(1)
-        layout.addWidget(self._build_status_pill())
 
-    def _build_nav_button(self, label: str, icon_kind: str, index: int, key: str) -> QPushButton:
-        button = QPushButton(f"  {label}")
+        self._status_button = QPushButton("No model")
+        self._status_button.setObjectName("statusLink")
+        self._status_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._status_button.setFont(QFont(self._font_family, 11))
+        self._status_button.setToolTip("Open saved models")
+        self._status_button.clicked.connect(self.library_requested.emit)
+        layout.addWidget(self._status_button)
+
+    def _build_nav_button(self, label: str, index: int, key: str) -> QPushButton:
+        button = QPushButton(label)
         button.setObjectName("navItem")
         button.setCheckable(True)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setIcon(_build_nav_icon(icon_kind, TEXT_SECONDARY))
-        button.setIconSize(QSize(18, 18))
-        button.setFixedHeight(44)
+        button.setFixedHeight(36)
         button.setFont(QFont(self._font_family, 13))
         button.clicked.connect(lambda _checked, i=index: self._on_nav_clicked(i))
 
         shortcut_letter = NAV_SHORTCUT_LETTERS.get(key)
         if shortcut_letter:
             button.setShortcut(QKeySequence(f"Alt+{shortcut_letter}"))
-            button.setToolTip(f"{label} (Alt+{shortcut_letter})")
+            button.setToolTip(f"{label}  Alt+{shortcut_letter}")
 
         self._button_group.addButton(button, index)
         return button
-
-    def _build_status_pill(self) -> QWidget:
-        pill_wrapper = QWidget()
-        outer = QVBoxLayout(pill_wrapper)
-        outer.setContentsMargins(20, 8, 20, 0)
-
-        pill = QFrame()
-        pill.setObjectName("statusPill")
-        pill_layout = QVBoxLayout(pill)
-        pill_layout.setContentsMargins(10, 7, 10, 7)
-        pill_layout.setSpacing(3)
-
-        name_row = QHBoxLayout()
-        name_row.setContentsMargins(0, 0, 0, 0)
-        name_row.setSpacing(8)
-
-        self._status_dot = QLabel()
-        self._status_dot.setFixedSize(8, 8)
-        name_row.addWidget(self._status_dot)
-
-        self._status_label = QLabel()
-        self._status_label.setFont(QFont(self._font_family, 11))
-        name_row.addWidget(self._status_label, 1)
-        pill_layout.addLayout(name_row)
-
-        self._status_secondary_label = QLabel()
-        self._status_secondary_label.setFont(QFont(self._font_family, 9))
-        self._status_secondary_label.setWordWrap(True)
-        self._status_secondary_label.setStyleSheet(f"color: {TEXT_SECONDARY}; padding-left: 16px;")
-        pill_layout.addWidget(self._status_secondary_label)
-
-        outer.addWidget(pill)
-        self.set_active_model_label(None, None)
-        return pill_wrapper
 
     def _on_nav_clicked(self, index: int) -> None:
         self.nav_selected.emit(index)
@@ -229,39 +129,20 @@ class _Sidebar(QWidget):
         if 0 <= index < len(self._nav_buttons):
             self._nav_buttons[index].setChecked(True)
 
-    def set_active_model_label(
-        self, display_name: Optional[str], best_val_mae: Optional[Dict[str, float]] = None
-    ) -> None:
-        """Update the bottom status pill.
-
-        With a model: name + best val MAE. Without: "No model loaded".
-        """
-        if self._status_dot is None or self._status_label is None or self._status_secondary_label is None:
+    def set_active_model_label(self, display_name: Optional[str]) -> None:
+        """Show the loaded model name, or 'No model'."""
+        if self._status_button is None:
             return
-
         if display_name:
-            self._status_dot.setStyleSheet(f"background-color: {ACCENT_COLOR}; border-radius: 4px;")
-            metrics = QFontMetrics(self._status_label.font())
-            elided = metrics.elidedText(display_name, Qt.TextElideMode.ElideRight, 130)
-            self._status_label.setText(elided)
-            self._status_label.setToolTip(display_name)
-            self._status_label.setStyleSheet(f"color: {TEXT_PRIMARY};")
-
-            mae = best_val_mae or {}
-            mae_text = (
-                f"Water \u00b1{mae.get('Water', 0.0):.2f}  "
-                f"Solids \u00b1{mae.get('Solids', 0.0):.2f}  "
-                f"Bitumen \u00b1{mae.get('Bitumen', 0.0):.2f}"
-            )
-            self._status_secondary_label.setText(mae_text)
-            self._status_secondary_label.setToolTip(mae_text)
-            self._status_secondary_label.setVisible(True)
+            metrics = QFontMetrics(self._status_button.font())
+            elided = metrics.elidedText(display_name, Qt.TextElideMode.ElideRight, SIDEBAR_WIDTH - 28)
+            self._status_button.setText(elided)
+            self._status_button.setToolTip(f"{display_name} — click to change")
+            self._status_button.setStyleSheet(f"color: {TEXT_PRIMARY};")
         else:
-            self._status_dot.setStyleSheet(f"background-color: {ACCENT_COLOR}; border-radius: 4px;")
-            self._status_label.setText("No model loaded")
-            self._status_label.setToolTip("")
-            self._status_label.setStyleSheet(f"color: {ACCENT_COLOR}; font-weight: 600;")
-            self._status_secondary_label.setVisible(False)
+            self._status_button.setText("No model")
+            self._status_button.setToolTip("Open saved models")
+            self._status_button.setStyleSheet("")
 
 
 class MainWindow(QMainWindow):
@@ -282,14 +163,12 @@ class MainWindow(QMainWindow):
 
         #: Active model: {"path", "metadata", "predictor"} or None.
         self.active_model: Optional[Dict[str, Any]] = None
-        #: Path payloads from Import → Train / Grade. Consumed when those pages show.
-        self.training_images: Optional[List[Dict[str, Any]]] = None
-        self.grading_images: Optional[List[Dict[str, Any]]] = None
 
         self._pages: List[QWidget] = []
         self._stack = QStackedWidget()
         self._sidebar = _Sidebar(self._font_family)
         self._sidebar.nav_selected.connect(self._on_nav_selected)
+        self._sidebar.library_requested.connect(lambda: self.navigate_to("library"))
 
         self._build_layout()
         self._update_window_title()
@@ -322,7 +201,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(separator)
 
         self._stack.setObjectName("contentStack")
-        for _key, _label, _icon_kind, page_cls in _NAV_ITEMS:
+        for _key, _label, page_cls in _NAV_ITEMS:
             page = page_cls(main_window=self)
             self._stack.addWidget(page)
             self._pages.append(page)
@@ -391,7 +270,7 @@ class MainWindow(QMainWindow):
 
         self.active_model = {"path": model_path, "metadata": metadata, "predictor": predictor}
         display_name = metadata.get("name") or Path(model_path).stem
-        self._sidebar.set_active_model_label(display_name, metadata.get("best_val_mae"))
+        self._sidebar.set_active_model_label(display_name)
 
         self._update_window_title()
         self.active_model_changed.emit(self.active_model)

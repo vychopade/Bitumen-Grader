@@ -1,12 +1,24 @@
+"""Paper-faithful training loop for froth-image regression.
+
+Prince & Prasad (Table 2): Adam, constant LR, MSE on process percentages,
+100 epochs, batch 32. Fine-tuning / baseline use 1e-4; frozen feature
+extraction uses 1e-3. The loop reports R² (the study's regression metric)
+and 3-bin equal-frequency accuracy (the study's classification endpoint).
+"""
+from __future__ import annotations
+
 import os
 import tempfile
+from dataclasses import dataclass
 from typing import Optional
 
 import torch
 import torch.nn as nn
-from dataclasses import dataclass
 from torch.utils.data import DataLoader
 from PyQt6.QtCore import QObject, pyqtSignal as Signal
+
+from app.constants import OUTPUT_NAMES
+from app.ml.recipe import CLS_BINS, WEIGHT_DECAY, learning_rate_for_adaptation
 
 
 @dataclass
@@ -23,20 +35,26 @@ class RegressionTrainingResult:
     test_sum_deviation: Optional[float] = None
     best_val_r2: Optional[dict] = None
     test_r2: Optional[dict] = None
+    best_val_cls_acc: Optional[dict] = None
+    test_cls_acc: Optional[dict] = None
 
 
 class RegressionTrainer(QObject):
     """Train/validate a BitumenRegressor. Emits progress each epoch.
 
-    Stops early if stop_requested is set or val loss stalls for ``patience``
-    epochs. ``adaptation`` is ``scratch`` / ``ft`` (optional freeze warmup then
-    train the backbone) or ``fe`` (backbone stays frozen). Uses Adam. Optional
-    knobs: different LRs for backbone vs head, cosine schedule, sum-to-100
-    penalty, and a held-out test eval after restoring the best checkpoint.
+    Follows the study protocol:
+      * Adam with a single constant learning rate (no cosine, no per-layer LRs)
+      * MSE on the process percentages (no composition penalty)
+      * ``adaptation`` ``scratch`` / ``ft`` trains the whole net; ``fe`` freezes
+        the backbone for the entire run
+      * best checkpoint is the highest mean validation R²
+      * full ``num_epochs`` unless the user stops (``patience`` is 0 by default)
+
+    Optional ``patience`` > 0 restores the older early-stop behaviour for tests.
     """
 
-    # epoch, train_loss, val_loss, val_mae_dict, val_sum_deviation
-    progress = Signal(int, float, float, dict, float)
+    # epoch, train_loss, val_loss, val_mae_dict, val_sum_deviation, val_r2_dict
+    progress = Signal(int, float, float, dict, float, dict)
     # RegressionTrainingResult
     finished = Signal(object)
     error = Signal(str)
@@ -49,20 +67,22 @@ class RegressionTrainer(QObject):
         train_loader: DataLoader,
         val_loader: DataLoader,
         device,
-        learning_rate,
-        num_epochs,
-        weight_decay,
-        output_stats,
-        normalise_targets,
-        patience,
+        learning_rate=None,
+        num_epochs=100,
+        weight_decay=WEIGHT_DECAY,
+        output_stats=None,
+        normalise_targets=False,
+        patience=0,
         test_loader: Optional[DataLoader] = None,
-        use_differential_lrs: bool = True,
-        backbone_lr_factor: float = 0.1,
-        use_cosine_schedule: bool = True,
-        freeze_backbone_epochs: int = 0,
-        sum_penalty_weight: float = 0.1,
         adaptation: str = "ft",
+        bin_edges: Optional[dict] = None,
         parent=None,
+        # Accepted so older call sites / tests do not explode; ignored.
+        use_differential_lrs: bool = False,
+        backbone_lr_factor: float = 0.1,
+        use_cosine_schedule: bool = False,
+        freeze_backbone_epochs: int = 0,
+        sum_penalty_weight: float = 0.0,
     ):
         super().__init__(parent)
 
@@ -71,64 +91,39 @@ class RegressionTrainer(QObject):
         self.val_loader = val_loader
         self.test_loader = test_loader
         self.device = device
-        self.learning_rate = learning_rate
-        self.num_epochs = num_epochs
-        self.weight_decay = weight_decay
-        self.output_stats = output_stats
-        self.normalise_targets = normalise_targets
-        self.patience = patience
-        self.use_differential_lrs = use_differential_lrs
-        self.backbone_lr_factor = backbone_lr_factor
-        self.use_cosine_schedule = use_cosine_schedule
-        self.freeze_backbone_epochs = max(0, int(freeze_backbone_epochs))
-        self.sum_penalty_weight = float(sum_penalty_weight)
-        # scratch / ft: optional freeze warmup then train the backbone.
-        # fe: freeze the backbone for the whole run (paper feature-extraction).
+        self.num_epochs = int(num_epochs)
+        self.weight_decay = float(weight_decay)
+        self.output_stats = output_stats or {}
+        self.normalise_targets = bool(normalise_targets)
+        self.patience = max(0, int(patience))
+        self.bin_edges = bin_edges or {}
         self.adaptation = adaptation if adaptation in {"scratch", "ft", "fe"} else "ft"
+        self.learning_rate = float(
+            learning_rate if learning_rate is not None else learning_rate_for_adaptation(self.adaptation)
+        )
 
-        # Checked between epochs so we can stop cleanly.
+        # Unused leftovers from the previous recipe; kept on the instance so
+        # any debug prints / UI that still read them do not fail.
+        self.use_differential_lrs = False
+        self.backbone_lr_factor = backbone_lr_factor
+        self.use_cosine_schedule = False
+        self.freeze_backbone_epochs = 0
+        self.sum_penalty_weight = 0.0
+
         self.stop_requested = False
 
     def request_stop(self) -> None:
         """Ask the loop to stop after the current epoch."""
         self.stop_requested = True
 
-    def _build_optimizer(self, *, backbone_trainable: bool):
-        head_params = [parameter for parameter in self.model.head_parameters() if parameter.requires_grad]
-        if backbone_trainable and self.use_differential_lrs:
-            backbone_params = [
-                parameter for parameter in self.model.backbone_parameters() if parameter.requires_grad
-            ]
-            param_groups = [
-                {"params": backbone_params, "lr": self.learning_rate * self.backbone_lr_factor},
-                {"params": head_params, "lr": self.learning_rate},
-            ]
-            # Skip empty groups (e.g. backbone still frozen).
-            param_groups = [group for group in param_groups if group["params"]]
-        else:
-            params = head_params
-            if backbone_trainable:
-                params = params + [
-                    parameter for parameter in self.model.backbone_parameters() if parameter.requires_grad
-                ]
-            param_groups = [{"params": params, "lr": self.learning_rate}]
-
-        return torch.optim.Adam(
-            param_groups,
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
-        )
-
-    def _build_scheduler(self, optimizer, remaining_epochs: int):
-        if not self.use_cosine_schedule or remaining_epochs <= 0:
-            return None
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(remaining_epochs, 1))
+    def _build_optimizer(self):
+        params = [parameter for parameter in self.model.parameters() if parameter.requires_grad]
+        return torch.optim.Adam(params, lr=self.learning_rate, weight_decay=self.weight_decay)
 
     def _denormalise_batch(self, batch: torch.Tensor) -> torch.Tensor:
         """Undo z-scoring for a (N, 3) [Water, Solids, Bitumen] batch."""
-        output_names = ("Water", "Solids", "Bitumen")
         denormalised = torch.zeros_like(batch)
-        for index, name in enumerate(output_names):
+        for index, name in enumerate(OUTPUT_NAMES):
             mean = self.output_stats[name]["mean"]
             std = self.output_stats[name]["std"]
             denormalised[:, index] = batch[:, index] * std + mean
@@ -139,16 +134,8 @@ class RegressionTrainer(QObject):
             return self._denormalise_batch(batch)
         return batch
 
-    def _compute_loss(self, outputs: torch.Tensor, targets: torch.Tensor, loss_fn: nn.Module) -> torch.Tensor:
-        mse = loss_fn(outputs, targets)
-        if self.sum_penalty_weight <= 0:
-            return mse
-        preds_pct = self._to_percentages(outputs)
-        sum_penalty = ((preds_pct.sum(dim=1) - 100.0) ** 2).mean()
-        return mse + self.sum_penalty_weight * sum_penalty
-
     def _evaluate_loader(self, loader: DataLoader, loss_fn: nn.Module):
-        """Eval mode: (mean_loss, mae_dict, sum_deviation)."""
+        """Eval mode: (mean_loss, mae_dict, sum_deviation, r2_dict, cls_acc)."""
         self.model.eval()
         running_loss = 0.0
         batches = 0
@@ -160,7 +147,7 @@ class RegressionTrainer(QObject):
                 images = images.to(self.device)
                 targets = targets.to(self.device)
                 outputs = self.model(images)
-                loss = self._compute_loss(outputs, targets, loss_fn)
+                loss = loss_fn(outputs, targets)
                 running_loss += loss.item()
                 batches += 1
                 all_preds.append(outputs.detach().cpu())
@@ -170,54 +157,71 @@ class RegressionTrainer(QObject):
         if all_preds:
             preds = torch.cat(all_preds, dim=0)
             truths = torch.cat(all_targets, dim=0)
-            if self.normalise_targets:
-                preds = self._denormalise_batch(preds)
-                truths = self._denormalise_batch(truths)
+            preds = self._to_percentages(preds)
+            truths = self._to_percentages(truths)
         else:
             preds = torch.zeros((0, 3))
             truths = torch.zeros((0, 3))
 
         mae_dict = {
-            "Water": (preds[:, 0] - truths[:, 0]).abs().mean().item() if len(preds) else 0.0,
-            "Solids": (preds[:, 1] - truths[:, 1]).abs().mean().item() if len(preds) else 0.0,
-            "Bitumen": (preds[:, 2] - truths[:, 2]).abs().mean().item() if len(preds) else 0.0,
+            name: (preds[:, index] - truths[:, index]).abs().mean().item() if len(preds) else 0.0
+            for index, name in enumerate(OUTPUT_NAMES)
         }
         r2_dict = self._r2_dict(preds, truths)
-        pred_sum = preds[:, 0] + preds[:, 1] + preds[:, 2]
+        cls_acc = self._cls_acc_dict(preds, truths)
+        pred_sum = preds.sum(dim=1) if len(preds) else torch.zeros(0)
         sum_deviation = (pred_sum - 100.0).abs().mean().item() if len(preds) else 0.0
-        return mean_loss, mae_dict, sum_deviation, r2_dict
+        return mean_loss, mae_dict, sum_deviation, r2_dict, cls_acc
 
     @staticmethod
     def _r2_dict(preds: torch.Tensor, truths: torch.Tensor) -> dict:
-        """Per-output R² on denormalised percentages (paper regression metric)."""
-        names = ("Water", "Solids", "Bitumen")
+        """Per-output R² on percentages (paper regression metric)."""
         if len(preds) < 2:
-            return {name: 0.0 for name in names}
+            return {name: 0.0 for name in OUTPUT_NAMES}
         ss_res = ((truths - preds) ** 2).sum(dim=0)
         ss_tot = ((truths - truths.mean(dim=0)) ** 2).sum(dim=0)
         r2 = 1.0 - ss_res / ss_tot.clamp(min=1e-8)
-        return {name: r2[index].item() for index, name in enumerate(names)}
+        return {name: r2[index].item() for index, name in enumerate(OUTPUT_NAMES)}
+
+    def _cls_acc_dict(self, preds: torch.Tensor, truths: torch.Tensor) -> dict:
+        """3-bin equal-frequency accuracy (paper classification endpoint)."""
+        acc = {}
+        if len(preds) == 0:
+            return {name: 0.0 for name in OUTPUT_NAMES}
+        for index, name in enumerate(OUTPUT_NAMES):
+            edges = self.bin_edges.get(name) or []
+            if len(edges) != CLS_BINS - 1:
+                acc[name] = 0.0
+                continue
+            edge_tensor = torch.tensor(edges, dtype=preds.dtype)
+            pred_bins = torch.bucketize(preds[:, index].contiguous(), edge_tensor)
+            true_bins = torch.bucketize(truths[:, index].contiguous(), edge_tensor)
+            acc[name] = (pred_bins == true_bins).float().mean().item()
+        return acc
+
+    @staticmethod
+    def _mean_r2(r2_dict: dict) -> float:
+        values = [float(r2_dict.get(name, 0.0)) for name in OUTPUT_NAMES]
+        return sum(values) / len(values) if values else float("-inf")
+
+    def _apply_adaptation(self) -> None:
+        if self.adaptation == "fe":
+            self.model.freeze_backbone()
+        else:
+            self.model.unfreeze_backbone()
 
     def run(self) -> None:
         try:
             self.model.to(self.device)
+            self._apply_adaptation()
+            optimizer = self._build_optimizer()
             loss_fn = nn.MSELoss()
 
-            freeze_forever = self.adaptation == "fe"
-            freeze_epochs = 0 if freeze_forever else self.freeze_backbone_epochs
-            if freeze_forever or freeze_epochs > 0:
-                self.model.freeze_backbone()
-                optimizer = self._build_optimizer(backbone_trainable=False)
-                scheduler_span = self.num_epochs if freeze_forever else freeze_epochs
-                scheduler = self._build_scheduler(optimizer, scheduler_span)
-            else:
-                self.model.unfreeze_backbone()
-                optimizer = self._build_optimizer(backbone_trainable=True)
-                scheduler = self._build_scheduler(optimizer, self.num_epochs)
-
             best_val_loss = float("inf")
+            best_mean_r2 = float("-inf")
             best_val_mae: dict = {}
             best_val_r2: dict = {}
+            best_val_cls_acc: dict = {}
             patience_counter = 0
             best_checkpoint_path = None
             training_history: list = []
@@ -228,13 +232,6 @@ class RegressionTrainer(QObject):
                 if self.stop_requested:
                     break
 
-                if not freeze_forever and freeze_epochs > 0 and epoch == freeze_epochs + 1:
-                    self.model.unfreeze_backbone()
-                    optimizer = self._build_optimizer(backbone_trainable=True)
-                    remaining = self.num_epochs - freeze_epochs
-                    scheduler = self._build_scheduler(optimizer, remaining)
-
-                # Train
                 self.model.train()
                 running_train_loss = 0.0
                 train_batches = 0
@@ -245,7 +242,7 @@ class RegressionTrainer(QObject):
 
                     optimizer.zero_grad()
                     outputs = self.model(images)
-                    loss = self._compute_loss(outputs, targets, loss_fn)
+                    loss = loss_fn(outputs, targets)
                     loss.backward()
                     optimizer.step()
 
@@ -254,10 +251,10 @@ class RegressionTrainer(QObject):
 
                 train_loss = running_train_loss / train_batches if train_batches else 0.0
 
-                # Validate
-                val_loss, val_mae_dict, val_sum_deviation, val_r2_dict = self._evaluate_loader(
+                val_loss, val_mae_dict, val_sum_deviation, val_r2_dict, val_cls_acc = self._evaluate_loader(
                     self.val_loader, loss_fn
                 )
+                mean_r2 = self._mean_r2(val_r2_dict)
 
                 training_history.append(
                     {
@@ -270,21 +267,25 @@ class RegressionTrainer(QObject):
                         "water_r2": val_r2_dict["Water"],
                         "solids_r2": val_r2_dict["Solids"],
                         "bitumen_r2": val_r2_dict["Bitumen"],
+                        "water_cls_acc": val_cls_acc["Water"],
+                        "solids_cls_acc": val_cls_acc["Solids"],
+                        "bitumen_cls_acc": val_cls_acc["Bitumen"],
                         "sum_deviation": val_sum_deviation,
                     }
                 )
 
-                self.progress.emit(epoch, train_loss, val_loss, val_mae_dict, val_sum_deviation)
+                self.progress.emit(epoch, train_loss, val_loss, val_mae_dict, val_sum_deviation, val_r2_dict)
                 final_epoch = epoch
 
-                if scheduler is not None:
-                    scheduler.step()
-
-                # Checkpoint / early stop
-                if val_loss < best_val_loss:
+                improved = mean_r2 > best_mean_r2 or (
+                    mean_r2 == best_mean_r2 and val_loss < best_val_loss
+                )
+                if improved:
+                    best_mean_r2 = mean_r2
                     best_val_loss = val_loss
                     best_val_mae = val_mae_dict.copy()
                     best_val_r2 = val_r2_dict.copy()
+                    best_val_cls_acc = val_cls_acc.copy()
                     if best_checkpoint_path is None:
                         fd, best_checkpoint_path = tempfile.mkstemp(suffix=".pt")
                         os.close(fd)
@@ -292,7 +293,7 @@ class RegressionTrainer(QObject):
                     patience_counter = 0
                 else:
                     patience_counter += 1
-                    if patience_counter >= self.patience:
+                    if self.patience > 0 and patience_counter >= self.patience:
                         self.early_stopped.emit(epoch)
                         stopped_early = True
                         break
@@ -305,8 +306,9 @@ class RegressionTrainer(QObject):
             test_loss = None
             test_sum_deviation = None
             test_r2 = None
+            test_cls_acc = None
             if self.test_loader is not None and len(self.test_loader.dataset) > 0:
-                test_loss, test_mae, test_sum_deviation, test_r2 = self._evaluate_loader(
+                test_loss, test_mae, test_sum_deviation, test_r2, test_cls_acc = self._evaluate_loader(
                     self.test_loader, loss_fn
                 )
 
@@ -323,6 +325,8 @@ class RegressionTrainer(QObject):
                 test_sum_deviation=test_sum_deviation,
                 best_val_r2=best_val_r2 or None,
                 test_r2=test_r2,
+                best_val_cls_acc=best_val_cls_acc or None,
+                test_cls_acc=test_cls_acc,
             )
             self.finished.emit(result)
 

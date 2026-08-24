@@ -1,9 +1,9 @@
 """
 Training progress panel.
 
-Live feedback for a training run: epoch bar, patience note, metric cards,
-sum-deviation check, loss/MAE charts, timestamped log, and a done / early-stop
-banner. Used by TrainPage; no dependency on MainWindow.
+Live feedback for a training run: epoch bar, metric cards, sum-deviation
+check, loss/R² charts, timestamped log, and a done / early-stop banner.
+Used by TrainPage; no dependency on MainWindow.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QHBoxLayout,
     QLabel,
     QProgressBar,
-    QPushButton,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -36,13 +36,13 @@ from app.theme import (
     SOLIDS_LINE_COLOR,
     SUCCESS_BG,
     SUCCESS_COLOR,
-    SUCCESS_HOVER_COLOR,
     SURFACE_COLOR,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     VAL_LINE_COLOR,
     WARNING_BG,
     WATER_LINE_COLOR,
+    LABEL_RESET_QSS,
     sum_deviation_color,
 )
 
@@ -57,6 +57,7 @@ class ProgressPanel(QWidget):
     """
 
     #: Fired when the user clicks "View in Model Library" on the done banner.
+    #: Fired when the user wants to jump to the model library after a run.
     view_in_library_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -72,6 +73,9 @@ class ProgressPanel(QWidget):
         self._water_maes: List[float] = []
         self._solids_maes: List[float] = []
         self._bitumen_maes: List[float] = []
+        self._water_r2s: List[float] = []
+        self._solids_r2s: List[float] = []
+        self._bitumen_r2s: List[float] = []
 
         self._epoch_label: Optional[QLabel] = None
         self._progress_bar: Optional[QProgressBar] = None
@@ -84,9 +88,9 @@ class ProgressPanel(QWidget):
         self._loss_figure: Optional[Figure] = None
         self._loss_canvas: Optional[FigureCanvasQTAgg] = None
         self._loss_axes = None
-        self._mae_figure: Optional[Figure] = None
-        self._mae_canvas: Optional[FigureCanvasQTAgg] = None
-        self._mae_axes = None
+        self._r2_figure: Optional[Figure] = None
+        self._r2_canvas: Optional[FigureCanvasQTAgg] = None
+        self._r2_axes = None
 
         self._completion_banner: Optional[QFrame] = None
         self._completion_label: Optional[QLabel] = None
@@ -145,23 +149,29 @@ class ProgressPanel(QWidget):
     def _build_metrics_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(8)
-        for key in ("Train Loss", "Val Loss", "Water MAE", "Solids MAE", "Bitumen MAE"):
+        for key in ("Train Loss", "Val Loss", "Bitumen R²", "Solids R²", "Water R²"):
             self._metric_values[key] = self._add_metric_card(row, key)
         return row
 
     def _add_metric_card(self, row: QHBoxLayout, title: str) -> QLabel:
         card = QFrame()
-        card.setStyleSheet(f"QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}")
+        card.setStyleSheet(
+            f"QFrame {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}"
+            f"{LABEL_RESET_QSS}"
+        )
 
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(10, 8, 10, 8)
         card_layout.setSpacing(4)
 
         title_label = QLabel(title)
+        title_label.setWordWrap(True)
+        title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         title_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 10px; background: transparent;")
         card_layout.addWidget(title_label)
 
         value_label = QLabel(PLACEHOLDER_VALUE)
+        value_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         value_label.setStyleSheet(
             f"color: {TEXT_PRIMARY}; font-size: 15px; font-weight: 600; background: transparent;"
         )
@@ -172,7 +182,10 @@ class ProgressPanel(QWidget):
 
     def _build_sum_deviation_row(self) -> QFrame:
         row_frame = QFrame()
-        row_frame.setStyleSheet(f"QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}")
+        row_frame.setStyleSheet(
+            f"QFrame {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}"
+            f"{LABEL_RESET_QSS}"
+        )
         row_frame.setToolTip("Predictions should sum to ~100%. High values mean the model is struggling.")
 
         row = QHBoxLayout(row_frame)
@@ -205,14 +218,14 @@ class ProgressPanel(QWidget):
         self._loss_canvas.setStyleSheet("background-color: transparent;")
         row.addWidget(self._loss_canvas, 1)
 
-        self._mae_figure = Figure(figsize=(4, 2.2), dpi=100)
-        self._mae_figure.patch.set_facecolor(SURFACE_COLOR)
-        self._mae_axes = self._mae_figure.add_subplot(111)
-        style_axes(self._mae_axes, "MAE (%)", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
-        self._mae_canvas = FigureCanvasQTAgg(self._mae_figure)
-        self._mae_canvas.setFixedHeight(190)
-        self._mae_canvas.setStyleSheet("background-color: transparent;")
-        row.addWidget(self._mae_canvas, 1)
+        self._r2_figure = Figure(figsize=(4, 2.2), dpi=100)
+        self._r2_figure.patch.set_facecolor(SURFACE_COLOR)
+        self._r2_axes = self._r2_figure.add_subplot(111)
+        style_axes(self._r2_axes, "R²", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
+        self._r2_canvas = FigureCanvasQTAgg(self._r2_figure)
+        self._r2_canvas.setFixedHeight(190)
+        self._r2_canvas.setStyleSheet("background-color: transparent;")
+        row.addWidget(self._r2_canvas, 1)
 
         return row
 
@@ -222,7 +235,7 @@ class ProgressPanel(QWidget):
         self._log_view.setFixedHeight(130)
         self._log_view.setStyleSheet(
             f"QTextEdit {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY};"
-            f"border: 1px solid {BORDER_COLOR}; border-radius: 8px;"
+            f"border: 1px solid {BORDER_COLOR}; border-radius: 3px;"
             f"font-family: Menlo, Consolas, monospace; font-size: 11px; padding: 8px; }}"
         )
         return self._log_view
@@ -235,30 +248,19 @@ class ProgressPanel(QWidget):
             # Qt, so a bare "QFrame" selector would also draw this border
             # around the nested message label, not just the banner.
             f"QFrame#completionBanner {{ background-color: {SUCCESS_BG}; border: 1px solid {SUCCESS_COLOR};"
-            f"border-radius: 8px; }}"
+            f"border-radius: 3px; }}"
         )
 
         row = QHBoxLayout(self._completion_banner)
-        row.setContentsMargins(14, 10, 14, 10)
-        row.setSpacing(12)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(8)
 
         self._completion_label = QLabel("")
         self._completion_label.setWordWrap(True)
         self._completion_label.setStyleSheet(
-            f"color: {SUCCESS_COLOR}; font-size: 12px; font-weight: 600; background: transparent;"
+            f"color: {SUCCESS_COLOR}; font-size: 12px; background: transparent;"
         )
         row.addWidget(self._completion_label, 1)
-
-        view_button = QPushButton("View in Model Library \u2192")
-        view_button.setObjectName("viewLibraryLink")
-        view_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        view_button.setStyleSheet(
-            f"QPushButton#viewLibraryLink {{ background: transparent; color: {SUCCESS_COLOR}; border: none;"
-            f"text-decoration: underline; font-size: 12px; font-weight: 600; padding: 0px; }}"
-            f"QPushButton#viewLibraryLink:hover {{ color: {SUCCESS_HOVER_COLOR}; }}"
-        )
-        view_button.clicked.connect(self.view_in_library_requested.emit)
-        row.addWidget(view_button)
 
         self._completion_banner.setVisible(False)
         return self._completion_banner
@@ -271,7 +273,7 @@ class ProgressPanel(QWidget):
             # Qt, so a bare "QFrame" selector would also draw this border
             # around the nested message label, not just the banner.
             f"QFrame#earlyStopBanner {{ background-color: {WARNING_BG}; border: 1px solid {ACCENT_COLOR};"
-            f"border-radius: 8px; }}"
+            f"border-radius: 3px; }}"
         )
 
         row = QHBoxLayout(self._early_stop_banner)
@@ -302,6 +304,9 @@ class ProgressPanel(QWidget):
         self._water_maes = []
         self._solids_maes = []
         self._bitumen_maes = []
+        self._water_r2s = []
+        self._solids_r2s = []
+        self._bitumen_r2s = []
 
         self._progress_bar.setRange(0, max(total_epochs, 1))
         self._progress_bar.setValue(0)
@@ -318,8 +323,8 @@ class ProgressPanel(QWidget):
         self._log_view.clear()
         style_axes(self._loss_axes, "Loss", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
         self._loss_canvas.draw_idle()
-        style_axes(self._mae_axes, "MAE (%)", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
-        self._mae_canvas.draw_idle()
+        style_axes(self._r2_axes, "R²", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
+        self._r2_canvas.draw_idle()
 
         self._completion_banner.setVisible(False)
         self._early_stop_banner.setVisible(False)
@@ -333,6 +338,7 @@ class ProgressPanel(QWidget):
         val_loss: float,
         val_mae_dict: Dict[str, float],
         val_sum_deviation: float,
+        val_r2_dict: Optional[Dict[str, float]] = None,
     ) -> None:
         """Refresh displays after one finished epoch."""
         self._epoch_label.setText(f"Epoch {epoch} / {self._total_epochs}")
@@ -345,7 +351,7 @@ class ProgressPanel(QWidget):
         else:
             self._patience_counter += 1
 
-        if self._patience_counter > 0:
+        if self._patience > 0 and self._patience_counter > 0:
             plural = "epoch" if self._patience_counter == 1 else "epochs"
             self._patience_label.setText(
                 f"No improvement for {self._patience_counter} {plural} (patience: {self._patience})"
@@ -357,12 +363,16 @@ class ProgressPanel(QWidget):
         water = val_mae_dict.get("Water", 0.0)
         solids = val_mae_dict.get("Solids", 0.0)
         bitumen = val_mae_dict.get("Bitumen", 0.0)
+        r2 = val_r2_dict or {}
+        water_r2 = r2.get("Water", 0.0)
+        solids_r2 = r2.get("Solids", 0.0)
+        bitumen_r2 = r2.get("Bitumen", 0.0)
 
         self._metric_values["Train Loss"].setText(f"{train_loss:.4f}")
         self._metric_values["Val Loss"].setText(f"{val_loss:.4f}")
-        self._metric_values["Water MAE"].setText(f"\u00b1{water:.2f}%")
-        self._metric_values["Solids MAE"].setText(f"\u00b1{solids:.2f}%")
-        self._metric_values["Bitumen MAE"].setText(f"\u00b1{bitumen:.2f}%")
+        self._metric_values["Bitumen R²"].setText(f"{bitumen_r2:.3f}")
+        self._metric_values["Solids R²"].setText(f"{solids_r2:.3f}")
+        self._metric_values["Water R²"].setText(f"{water_r2:.3f}")
 
         self._sum_dev_value.setText(f"\u00b1{val_sum_deviation:.2f}%")
         self._sum_dev_value.setStyleSheet(
@@ -374,12 +384,16 @@ class ProgressPanel(QWidget):
         self._water_maes.append(water)
         self._solids_maes.append(solids)
         self._bitumen_maes.append(bitumen)
+        self._water_r2s.append(water_r2)
+        self._solids_r2s.append(solids_r2)
+        self._bitumen_r2s.append(bitumen_r2)
         self._redraw_loss_chart()
-        self._redraw_mae_chart()
+        self._redraw_r2_chart()
 
         self.append_log(
             f"Epoch {epoch}/{self._total_epochs} \u2014 Loss: {train_loss:.4f} | Val: {val_loss:.4f} "
-            f"| Water: \u00b1{water:.2f}%  Solids: \u00b1{solids:.2f}%  Bitumen: \u00b1{bitumen:.2f}% "
+            f"| R² Bitumen: {bitumen_r2:.3f}  Solids: {solids_r2:.3f}  Water: {water_r2:.3f} "
+            f"| MAE W \u00b1{water:.2f}% S \u00b1{solids:.2f}% B \u00b1{bitumen:.2f}% "
             f"| Sum dev: \u00b1{val_sum_deviation:.2f}%"
         )
 
@@ -399,59 +413,57 @@ class ProgressPanel(QWidget):
         model_name: str,
         best_val_mae: Dict[str, float],
         test_mae: Optional[Dict[str, float]] = None,
+        best_val_r2: Optional[Dict[str, float]] = None,
+        test_r2: Optional[Dict[str, float]] = None,
     ) -> None:
         """Green "training complete" banner after a successful save."""
         self._early_stop_banner.setVisible(False)
         text = (
             f'Training complete \u2014 "{model_name}" saved.\n'
-            f"Val: Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%  "
-            f"Solids \u00b1{best_val_mae.get('Solids', 0.0):.2f}%  "
-            f"Bitumen \u00b1{best_val_mae.get('Bitumen', 0.0):.2f}%"
+            f"{self._format_r2_mae_line('Val', best_val_r2, best_val_mae)}"
         )
-        if test_mae:
-            text += (
-                f"\nTest: Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
-                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
-                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
-            )
+        if test_mae or test_r2:
+            text += f"\n{self._format_r2_mae_line('Test', test_r2, test_mae)}"
         self._completion_label.setText(text)
         self._completion_banner.setVisible(True)
         self.append_log(f'Training complete. Saved as "{model_name}".')
-        if test_mae:
-            self.append_log(
-                f"Test MAE \u2014 Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
-                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
-                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
-            )
+        if test_mae or test_r2:
+            self.append_log(self._format_r2_mae_line("Test", test_r2, test_mae))
 
     def show_early_stopped_banner(
         self,
         epoch: int,
         best_val_mae: Dict[str, float],
         test_mae: Optional[Dict[str, float]] = None,
+        best_val_r2: Optional[Dict[str, float]] = None,
+        test_r2: Optional[Dict[str, float]] = None,
     ) -> None:
         """Amber early-stop banner instead of the green one."""
         self._completion_banner.setVisible(False)
         text = (
             f"Early stop at epoch {epoch}.\n"
-            f"Val: Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%  "
-            f"Solids \u00b1{best_val_mae.get('Solids', 0.0):.2f}%  "
-            f"Bitumen \u00b1{best_val_mae.get('Bitumen', 0.0):.2f}%"
+            f"{self._format_r2_mae_line('Val', best_val_r2, best_val_mae)}"
         )
-        if test_mae:
-            text += (
-                f"\nTest: Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
-                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
-                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
-            )
+        if test_mae or test_r2:
+            text += f"\n{self._format_r2_mae_line('Test', test_r2, test_mae)}"
         self._early_stop_label.setText(text)
         self._early_stop_banner.setVisible(True)
-        if test_mae:
-            self.append_log(
-                f"Test MAE \u2014 Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
-                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
-                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
-            )
+        if test_mae or test_r2:
+            self.append_log(self._format_r2_mae_line("Test", test_r2, test_mae))
+
+    @staticmethod
+    def _format_r2_mae_line(
+        split: str,
+        r2: Optional[Dict[str, float]],
+        mae: Optional[Dict[str, float]],
+    ) -> str:
+        r2 = r2 or {}
+        mae = mae or {}
+        return (
+            f"{split}: R² Bitumen {r2.get('Bitumen', 0.0):.3f}  Solids {r2.get('Solids', 0.0):.3f}  "
+            f"Water {r2.get('Water', 0.0):.3f}  |  MAE B \u00b1{mae.get('Bitumen', 0.0):.2f}%  "
+            f"S \u00b1{mae.get('Solids', 0.0):.2f}%  W \u00b1{mae.get('Water', 0.0):.2f}%"
+        )
 
     # -- Internal helpers --------------------------------------------------
 
@@ -469,17 +481,17 @@ class ProgressPanel(QWidget):
         self._loss_figure.tight_layout()
         self._loss_canvas.draw_idle()
 
-    def _redraw_mae_chart(self) -> None:
-        style_axes(self._mae_axes, "MAE (%)", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
-        epochs = list(range(1, len(self._water_maes) + 1))
-        self._mae_axes.plot(epochs, self._water_maes, color=WATER_LINE_COLOR, linewidth=1.6, label="Water")
-        self._mae_axes.plot(epochs, self._solids_maes, color=SOLIDS_LINE_COLOR, linewidth=1.6, label="Solids")
-        self._mae_axes.plot(epochs, self._bitumen_maes, color=BITUMEN_LINE_COLOR, linewidth=1.6, label="Bitumen")
+    def _redraw_r2_chart(self) -> None:
+        style_axes(self._r2_axes, "R²", facecolor=SURFACE_COLOR, grid_alpha=0.6, clear=True)
+        epochs = list(range(1, len(self._bitumen_r2s) + 1))
+        self._r2_axes.plot(epochs, self._water_r2s, color=WATER_LINE_COLOR, linewidth=1.6, label="Water")
+        self._r2_axes.plot(epochs, self._solids_r2s, color=SOLIDS_LINE_COLOR, linewidth=1.6, label="Solids")
+        self._r2_axes.plot(epochs, self._bitumen_r2s, color=BITUMEN_LINE_COLOR, linewidth=1.6, label="Bitumen")
         if epochs:
-            legend = self._mae_axes.legend(
-                loc="upper right", fontsize=7, facecolor=SURFACE_COLOR, edgecolor=BORDER_COLOR
+            legend = self._r2_axes.legend(
+                loc="lower right", fontsize=7, facecolor=SURFACE_COLOR, edgecolor=BORDER_COLOR
             )
             for text in legend.get_texts():
                 text.set_color(TEXT_SECONDARY)
-        self._mae_figure.tight_layout()
-        self._mae_canvas.draw_idle()
+        self._r2_figure.tight_layout()
+        self._r2_canvas.draw_idle()

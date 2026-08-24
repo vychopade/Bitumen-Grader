@@ -9,8 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from PyQt6.QtCore import QByteArray, Qt
-from PyQt6.QtSvgWidgets import QSvgWidget
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -26,36 +25,22 @@ from PyQt6.QtWidgets import (
 from app.components.model_card import ModelCard
 from app.paths import MODELS_DIR
 from app.theme import (
-    ACCENT_COLOR,
-    ACCENT_HOVER_COLOR,
-    BORDER_COLOR,
     DANGER_COLOR,
     PAGE_MARGINS,
     PAGE_SPACING,
     SURFACE_COLOR,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
+    link_button_qss,
 )
 from app.utils.model_io import list_saved_models
-from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
 
 if TYPE_CHECKING:
     from app.main_window import MainWindow
 
 CARD_MIN_WIDTH = 340
-CARD_SPACING = 16
+CARD_SPACING = 12
 MIN_COLUMNS = 2
-
-_EMPTY_STATE_SVG = b"""<?xml version="1.0" encoding="UTF-8"?>
-<svg width="120" height="120" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="60" cy="60" r="56" fill="none" stroke="#33373F" stroke-width="2"/>
-  <rect x="34" y="50" width="52" height="34" rx="6" fill="none" stroke="#8B909A" stroke-width="2.5"/>
-  <line x1="34" y1="60" x2="86" y2="60" stroke="#8B909A" stroke-width="2.5"/>
-  <circle cx="60" cy="72" r="6" fill="none" stroke="#E8A838" stroke-width="2.5"/>
-  <path d="M60 50 L60 30" stroke="#8B909A" stroke-width="2.5" stroke-linecap="round"/>
-  <path d="M50 38 L60 28 L70 38" fill="none" stroke="#8B909A" stroke-width="2.5"
-        stroke-linecap="round" stroke-linejoin="round"/>
-</svg>"""
 
 
 class _CardsGrid(QWidget):
@@ -129,9 +114,7 @@ class LibraryPage(QWidget):
         self._no_match_label: Optional[QLabel] = None
         self._scroll: Optional[QScrollArea] = None
         self._cards_grid: Optional[_CardsGrid] = None
-        self._shortcut_bindings: List[tuple] = []
         self._train_link_button: Optional[QPushButton] = None
-        self._tab_order_applied = False
 
         self._build_ui()
 
@@ -185,24 +168,19 @@ class LibraryPage(QWidget):
         header = QVBoxLayout()
         header.setSpacing(4)
 
-        title = QLabel("Model Library")
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 20px; font-weight: 600;")
+        title = QLabel("Models")
+        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 16px; background: transparent;")
         header.addWidget(title)
-
-        subtitle = QLabel("Load, retrain on new data, or delete saved models.")
-        subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
-        header.addWidget(subtitle)
 
         return header
 
     def _build_search_bar(self) -> QLineEdit:
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("Search by name\u2026")
-        self._search_edit.setFixedHeight(38)
+        self._search_edit.setFixedHeight(32)
         self._search_edit.setStyleSheet(
             f"QLineEdit {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY};"
-            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 6px 12px; font-size: 13px; }}"
-            f"QLineEdit:focus {{ border: 1px solid {ACCENT_COLOR}; }}"
+            f"border: 1px solid #3A3D44; border-radius: 3px; padding: 4px 8px; font-size: 13px; }}"
         )
         self._search_edit.textChanged.connect(self._on_search_text_changed)
         return self._search_edit
@@ -210,51 +188,27 @@ class LibraryPage(QWidget):
     def _build_empty_state(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 60, 0, 60)
-        layout.setSpacing(16)
+        layout.setContentsMargins(0, 40, 0, 40)
+        layout.setSpacing(8)
         layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
-        illustration = QSvgWidget()
-        illustration.load(QByteArray(_EMPTY_STATE_SVG))
-        illustration.setFixedSize(120, 120)
-        layout.addWidget(illustration, 0, Qt.AlignmentFlag.AlignHCenter)
-
-        message = QLabel("No models yet. Train one to get started.")
+        message = QLabel("No saved models yet.")
         message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        message.setWordWrap(True)
-        message.setFixedWidth(320)
-        message.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 14px; background: transparent;")
+        message.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; background: transparent;")
         layout.addWidget(message, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        train_link = QPushButton("Train a Model \u2192")
-        train_link.setObjectName("trainModelLink")
+        train_link = QPushButton("Train one")
         train_link.setCursor(Qt.CursorShape.PointingHandCursor)
-        train_link.setStyleSheet(
-            f"QPushButton#trainModelLink {{ background: transparent; color: {ACCENT_COLOR}; border: none;"
-            f"font-size: 13px; font-weight: 600; text-decoration: underline; padding: 4px; }}"
-            f"QPushButton#trainModelLink:hover {{ color: {ACCENT_HOVER_COLOR}; }}"
-        )
-        train_link.setToolTip(shortcut_tooltip("Go to Train Model", "M"))
+        train_link.setStyleSheet(link_button_qss())
         train_link.clicked.connect(self._navigate_to_train_page)
         layout.addWidget(train_link, 0, Qt.AlignmentFlag.AlignHCenter)
-        self._shortcut_bindings.append((train_link, "M"))
         self._train_link_button = train_link
 
         return container
 
-    # -- Data loading / filtering --------------------------------------------
-
     def showEvent(self, event) -> None:  # noqa: D401 - Qt override
         super().showEvent(event)
         self._reload_models()
-        bind_page_shortcuts(self._shortcut_bindings)
-        if not self._tab_order_applied and self._search_edit is not None and self._train_link_button is not None:
-            QWidget.setTabOrder(self._search_edit, self._train_link_button)
-            self._tab_order_applied = True
-
-    def hideEvent(self, event) -> None:  # noqa: D401 - Qt override
-        super().hideEvent(event)
-        unbind_page_shortcuts(self._shortcut_bindings)
 
     def _reload_models(self) -> None:
         try:

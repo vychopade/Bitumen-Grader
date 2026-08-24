@@ -1,1 +1,1 @@
-"""Shared helpers (model I/O, images, shortcuts)."""
+"""Shared helpers (model I/O, images, file picking)."""

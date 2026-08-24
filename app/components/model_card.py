@@ -1,8 +1,8 @@
 """
 Model card.
 
-One saved model: name, date, type pill, epochs, best val MAE, plus load /
-details / delete. Details expands MAE/loss curves and output stats.
+One saved model: name, date, architecture, R², plus load / retrain /
+details / delete. Details expands R²/loss curves and output stats.
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ matplotlib.use("QtAgg")
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal  # noqa: E402
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF  # noqa: E402
+from PyQt6.QtCore import Qt, pyqtSignal  # noqa: E402
+from PyQt6.QtGui import QColor  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QAbstractItemView,
     QFrame,
@@ -37,97 +37,17 @@ from app.theme import (
     BITUMEN_LINE_COLOR,
     BORDER_COLOR,
     DANGER_COLOR,
-    DANGER_HOVER_BG,
-    PILL_BACKGROUND,
-    REGRESSION_PILL_COLOR,
     SOLIDS_LINE_COLOR,
     SURFACE_COLOR,
-    SURFACE_HOVER_COLOR,
-    TEXT_INVERSE,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     VAL_LINE_COLOR,
     WATER_LINE_COLOR,
     accent_button_qss,
+    ghost_button_qss,
+    link_button_qss,
 )
 from app.utils.formatting import format_created_at
-
-
-def _build_check_icon(color: str, size: int = 14) -> QIcon:
-    """Small checkmark drawn with QPainter."""
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color))
-    pen.setWidthF(1.8)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-    painter.drawPolyline(
-        QPolygonF(
-            [
-                QPointF(size * 0.18, size * 0.52),
-                QPointF(size * 0.42, size * 0.75),
-                QPointF(size * 0.84, size * 0.25),
-            ]
-        )
-    )
-    painter.end()
-    return QIcon(pixmap)
-
-
-def _build_chevron_icon(direction: str, color: str, size: int = 12) -> QIcon:
-    """Up/down chevron for the details accordion."""
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color))
-    pen.setWidthF(1.6)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-
-    margin = size * 0.24
-    if direction == "up":
-        points = [QPointF(margin, size - margin), QPointF(size / 2, margin), QPointF(size - margin, size - margin)]
-    else:
-        points = [QPointF(margin, margin), QPointF(size / 2, size - margin), QPointF(size - margin, margin)]
-    painter.drawPolyline(QPolygonF(points))
-    painter.end()
-    return QIcon(pixmap)
-
-
-def _build_trash_icon(color: str, size: int = 16) -> QIcon:
-    """Trash-can icon for delete."""
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color))
-    pen.setWidthF(1.4)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-
-    top_y = size * 0.3
-    painter.drawLine(QPointF(size * 0.18, top_y), QPointF(size * 0.82, top_y))
-    painter.drawLine(QPointF(size * 0.4, top_y), QPointF(size * 0.42, size * 0.16))
-    painter.drawLine(QPointF(size * 0.42, size * 0.16), QPointF(size * 0.58, size * 0.16))
-    painter.drawLine(QPointF(size * 0.58, size * 0.16), QPointF(size * 0.6, top_y))
-
-    body = QRectF(size * 0.26, top_y, size * 0.48, size * 0.56)
-    painter.drawRoundedRect(body, 1.5, 1.5)
-    painter.drawLine(QPointF(size * 0.4, top_y + size * 0.1), QPointF(size * 0.4, top_y + size * 0.42))
-    painter.drawLine(QPointF(size * 0.6, top_y + size * 0.1), QPointF(size * 0.6, top_y + size * 0.42))
-
-    painter.end()
-    return QIcon(pixmap)
 
 
 class ModelCard(QFrame):
@@ -184,7 +104,7 @@ class ModelCard(QFrame):
 
         name_label = QLabel(self.metadata.get("name") or "Untitled Model")
         name_label.setWordWrap(True)
-        name_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 15px; font-weight: 700; background: transparent;")
+        name_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 14px; background: transparent;")
         name_col.addWidget(name_label)
 
         date_label = QLabel(format_created_at(self.metadata.get("created_at"), fmt="Created %b %d %Y at %H:%M"))
@@ -193,10 +113,9 @@ class ModelCard(QFrame):
 
         row.addLayout(name_col, 1)
 
-        self._active_badge = QLabel("Active")
+        self._active_badge = QLabel("in use")
         self._active_badge.setStyleSheet(
-            f"background-color: {ACCENT_COLOR}; color: #13151A; font-size: 10px; font-weight: 700;"
-            f"border-radius: 8px; padding: 3px 10px;"
+            f"color: {ACCENT_COLOR}; font-size: 11px; background: transparent; padding: 0;"
         )
         row.addWidget(self._active_badge, 0, Qt.AlignmentFlag.AlignTop)
 
@@ -204,51 +123,60 @@ class ModelCard(QFrame):
 
     def _build_pills_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.setSpacing(8)
-
-        row.addWidget(self._build_pill("Regression", background=REGRESSION_PILL_COLOR, color="#FFFFFF"))
+        row.setSpacing(12)
 
         architecture = self.metadata.get("architecture")
+        labels = {
+            "baseline": "Baseline CNN",
+            "resnet50": "ResNet50",
+            "vgg16": "VGG16",
+            "resnet18": "ResNet18",
+        }
+        bits = []
         if architecture:
-            labels = {
-                "baseline": "Baseline CNN",
-                "resnet50": "ResNet50",
-                "vgg16": "VGG16",
-                "resnet18": "ResNet18",
-            }
-            row.addWidget(self._build_pill(labels.get(architecture, str(architecture))))
-
+            bits.append(labels.get(architecture, str(architecture)))
         if self.metadata.get("continued_training"):
-            row.addWidget(self._build_pill("Retrained"))
-
+            bits.append("retrained")
         epoch_count = self.metadata.get("final_epoch") or len(self.metadata.get("training_history") or [])
-        row.addWidget(self._build_pill(f"{epoch_count} epoch{'s' if epoch_count != 1 else ''}"))
+        if epoch_count:
+            bits.append(f"{epoch_count} epoch{'s' if epoch_count != 1 else ''}")
 
+        meta = QLabel("  ·  ".join(bits) if bits else "")
+        meta.setWordWrap(True)
+        meta.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        row.addWidget(meta)
         row.addStretch(1)
         return row
 
-    def _build_pill(self, text: str, background: str = PILL_BACKGROUND, color: str = TEXT_PRIMARY) -> QLabel:
-        pill = QLabel(text)
-        pill.setStyleSheet(
-            f"background-color: {background}; color: {color}; font-size: 11px; font-weight: 600;"
-            f"border-radius: 8px; padding: 4px 10px;"
-        )
-        return pill
-
     def _build_mae_summary_row(self) -> QLabel:
+        val_r2 = self.metadata.get("best_val_r2") or {}
+        test_r2 = self.metadata.get("test_r2") or {}
         best_val_mae = self.metadata.get("best_val_mae") or {}
-        parts = [
-            f"Val Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%",
-            f"Solids \u00b1{best_val_mae.get('Solids', 0.0):.2f}%",
-            f"Bitumen \u00b1{best_val_mae.get('Bitumen', 0.0):.2f}%",
-        ]
-        test_mae = self.metadata.get("test_mae") or None
-        if test_mae:
-            parts.append(
-                f"| Test Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
-                f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
-                f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
-            )
+        if val_r2:
+            parts = [
+                f"Val R² Bitumen {val_r2.get('Bitumen', 0.0):.3f}",
+                f"Solids {val_r2.get('Solids', 0.0):.3f}",
+                f"Water {val_r2.get('Water', 0.0):.3f}",
+            ]
+            if test_r2:
+                parts.append(
+                    f"| Test R² Bitumen {test_r2.get('Bitumen', 0.0):.3f}  "
+                    f"Solids {test_r2.get('Solids', 0.0):.3f}  "
+                    f"Water {test_r2.get('Water', 0.0):.3f}"
+                )
+        else:
+            parts = [
+                f"Val Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%",
+                f"Solids \u00b1{best_val_mae.get('Solids', 0.0):.2f}%",
+                f"Bitumen \u00b1{best_val_mae.get('Bitumen', 0.0):.2f}%",
+            ]
+            test_mae = self.metadata.get("test_mae") or None
+            if test_mae:
+                parts.append(
+                    f"| Test Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
+                    f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
+                    f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
+                )
         label = QLabel("   ".join(parts))
         label.setWordWrap(True)
         label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
@@ -256,11 +184,10 @@ class ModelCard(QFrame):
 
     def _build_action_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(12)
 
-        self._load_button = QPushButton("Load Model")
+        self._load_button = QPushButton("Load")
         self._load_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._load_button.setIconSize(QSize(12, 12))
         self._load_button.setToolTip("Use this model for grading")
         self._load_button.clicked.connect(lambda: self.load_requested.emit(self.metadata))
         row.addWidget(self._load_button)
@@ -268,40 +195,23 @@ class ModelCard(QFrame):
         self._retrain_button = QPushButton("Retrain")
         self._retrain_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._retrain_button.setToolTip("Continue this model on a new labelled dataset")
-        self._retrain_button.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {TEXT_PRIMARY};"
-            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 8px 14px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
-        )
+        self._retrain_button.setStyleSheet(ghost_button_qss())
         self._retrain_button.clicked.connect(lambda: self.retrain_requested.emit(self.metadata))
         row.addWidget(self._retrain_button)
 
-        self._details_button = QPushButton("  Details")
-        self._details_button.setIcon(_build_chevron_icon("down", TEXT_PRIMARY))
-        self._details_button.setIconSize(QSize(12, 12))
+        self._details_button = QPushButton("Details")
         self._details_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._details_button.setToolTip("Show MAE/loss curves and output stats")
-        self._details_button.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {TEXT_PRIMARY};"
-            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 8px 14px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
-        )
+        self._details_button.setToolTip("Show R²/loss curves and output stats")
+        self._details_button.setStyleSheet(link_button_qss())
         self._details_button.clicked.connect(self._toggle_details)
         row.addWidget(self._details_button)
 
         row.addStretch(1)
 
-        self._delete_button = QPushButton()
-        self._delete_button.setIcon(_build_trash_icon(DANGER_COLOR))
-        self._delete_button.setIconSize(QSize(16, 16))
-        self._delete_button.setFixedSize(34, 34)
+        self._delete_button = QPushButton("Delete")
         self._delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._delete_button.setToolTip("Delete model")
-        self._delete_button.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; border: 1px solid {BORDER_COLOR};"
-            f"border-radius: 6px; padding: 0px; }}"
-            f"QPushButton:hover {{ background-color: {DANGER_HOVER_BG}; border: 1px solid {DANGER_COLOR}; }}"
-        )
+        self._delete_button.setStyleSheet(link_button_qss(color=DANGER_COLOR))
         self._delete_button.clicked.connect(self._confirm_delete)
         row.addWidget(self._delete_button)
 
@@ -470,45 +380,29 @@ class ModelCard(QFrame):
     # -- Public API ----------------------------------------------------------
 
     def set_active(self, is_active: bool) -> None:
-        """Update active styling (left border, badge, Load button)."""
+        """Mark this card as the loaded model."""
         self._is_active = is_active
         self._active_badge.setVisible(is_active)
 
         if is_active:
             self.setStyleSheet(
-                f"""
-                QFrame#modelCard {{
-                    background-color: {SURFACE_COLOR}; border-radius: 8px;
-                    border-top: 1px solid {BORDER_COLOR}; border-right: 1px solid {BORDER_COLOR};
-                    border-bottom: 1px solid {BORDER_COLOR}; border-left: 3px solid {ACCENT_COLOR};
-                }}
-                """
+                f"QFrame#modelCard {{ background-color: {SURFACE_COLOR};"
+                f"border: 1px solid {ACCENT_COLOR}; border-radius: 3px; }}"
             )
-            self._load_button.setText("  Active Model")
-            self._load_button.setIcon(_build_check_icon(TEXT_INVERSE))
-            self._load_button.setStyleSheet(
-                accent_button_qss(extra="font-weight: 700; padding: 8px 14px; font-size: 12px;")
-            )
+            self._load_button.setText("Loaded")
+            self._load_button.setStyleSheet(accent_button_qss())
         else:
             self.setStyleSheet(
-                f"QFrame#modelCard {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR};"
-                f"border-radius: 8px; }}"
+                f"QFrame#modelCard {{ background-color: {SURFACE_COLOR};"
+                f"border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}"
             )
-            self._load_button.setText("Load Model")
-            self._load_button.setIcon(QIcon())
-            self._load_button.setStyleSheet(
-                accent_button_qss(extra="font-weight: 700; padding: 8px 14px; font-size: 12px;")
-            )
-
-    # -- Internal handlers --------------------------------------------------
+            self._load_button.setText("Load")
+            self._load_button.setStyleSheet(accent_button_qss())
 
     def _toggle_details(self) -> None:
         self._details_expanded = not self._details_expanded
         self._details_section.setVisible(self._details_expanded)
-        self._details_button.setText("  Hide Details" if self._details_expanded else "  Details")
-        self._details_button.setIcon(
-            _build_chevron_icon("up" if self._details_expanded else "down", TEXT_PRIMARY)
-        )
+        self._details_button.setText("Hide details" if self._details_expanded else "Details")
 
     def _confirm_delete(self) -> None:
         name = self.metadata.get("name") or "this model"

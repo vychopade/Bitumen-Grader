@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from PIL import Image
 from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
@@ -27,12 +26,13 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from app.components.loading_overlay import LoadingOverlay
-from app.constants import IMAGE_EXTENSIONS, OUTPUT_NAMES
+from app.constants import OUTPUT_NAMES
 
 from app.pages.grade_widgets import (
     PAN_GRADE_COLORS,
@@ -51,7 +51,6 @@ from app.pages.grade_widgets import (
     _RangeBar,
 )
 from app.theme import (
-    ACCENT_COLOR,
     BACKGROUND_COLOR,
     BORDER_COLOR,
     DANGER_COLOR,
@@ -63,10 +62,15 @@ from app.theme import (
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     accent_button_qss,
+    ghost_button_qss,
+    LABEL_RESET_QSS,
+    link_button_qss,
     sum_deviation_color,
 )
 from app.utils.formatting import format_created_at
-from app.utils.shortcuts import bind_page_shortcuts, shortcut_tooltip, unbind_page_shortcuts
+from app.utils.files import unique_paths
+from app.utils.image_utils import load_rgb_image
+from app.utils.media import is_image_path
 
 if TYPE_CHECKING:
     from app.main_window import MainWindow
@@ -131,16 +135,12 @@ class GradePage(QWidget):
         self._export_button: Optional[QPushButton] = None
         self._clear_results_button: Optional[QPushButton] = None
 
-        self._shortcut_bindings: List[tuple] = []
-        self._tab_order_applied = False
-
         self._build_ui()
         self._loading_overlay = LoadingOverlay(self)
 
         if self.main_window is not None:
             self.main_window.active_model_changed.connect(self._on_active_model_changed)
 
-        self._sync_from_main_window()
         self._refresh_top_bar()
         self._refresh_right_column()
         self._update_action_buttons_enabled()
@@ -153,7 +153,6 @@ class GradePage(QWidget):
         root.setSpacing(PAGE_SPACING)
 
         root.addLayout(self._build_header())
-        root.addWidget(self._build_model_selector_bar())
 
         self._error_label = QLabel("")
         self._error_label.setWordWrap(True)
@@ -167,68 +166,19 @@ class GradePage(QWidget):
         content_row.addWidget(self._build_right_panel(), 1)
         root.addLayout(content_row, 1)
 
-    def _apply_tab_order(self) -> None:
-        """Focus order from the model bar downward."""
-        chain = [
-            self._change_model_button,
-            self._queue_list,
-            self._add_images_button,
-            self._grade_all_button,
-            self._clear_all_button,
-            self._grade_this_button,
-            self._export_button,
-            self._clear_results_button,
-        ]
-        for earlier, later in zip(chain, chain[1:]):
-            if earlier is not None and later is not None:
-                QWidget.setTabOrder(earlier, later)
+    def _build_header(self) -> QHBoxLayout:
+        header = QHBoxLayout()
+        header.setSpacing(12)
 
-    def _build_header(self) -> QVBoxLayout:
-        header = QVBoxLayout()
-        header.setSpacing(4)
-
-        title = QLabel("Grade Images")
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 20px; font-weight: 600;")
+        title = QLabel("Grade")
+        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 16px; background: transparent;")
         header.addWidget(title)
 
-        subtitle = QLabel("Predict Water, Solids, and Bitumen from your sample photos.")
-        subtitle.setWordWrap(True)
-        subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
-        header.addWidget(subtitle)
+        self._model_value_label = QLabel("")
+        self._model_value_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;")
+        header.addWidget(self._model_value_label, 1)
 
         return header
-
-    def _build_model_selector_bar(self) -> QFrame:
-        bar = QFrame()
-        bar.setStyleSheet(f"QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}")
-
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(12)
-
-        label = QLabel("Active Model:")
-        label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;")
-        layout.addWidget(label)
-
-        self._model_value_label = QLabel("")
-        self._model_value_label.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600; background: transparent;"
-        )
-        layout.addWidget(self._model_value_label, 1)
-
-        self._change_model_button = QPushButton("Change Model")
-        self._change_model_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._change_model_button.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {TEXT_PRIMARY}; border: 1px solid {BORDER_COLOR};"
-            f"border-radius: 6px; padding: 7px 14px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
-        )
-        self._change_model_button.setToolTip(shortcut_tooltip("Open Model Library to change the active model", "C"))
-        self._change_model_button.clicked.connect(self._navigate_to_model_library)
-        layout.addWidget(self._change_model_button)
-        self._shortcut_bindings.append((self._change_model_button, "C"))
-
-        return bar
 
     def _build_left_panel(self) -> QWidget:
         container = QWidget()
@@ -239,31 +189,19 @@ class GradePage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        header = QLabel("Image Queue")
-        header.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 14px; font-weight: 600; background: transparent;")
+        header = QLabel("Queue")
+        header.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; background: transparent;")
         layout.addWidget(header)
 
         self._drop_zone = _ImageDropZone()
         self._drop_zone.files_selected.connect(self._add_images)
         layout.addWidget(self._drop_zone)
 
-        self._add_images_button = QPushButton("Add Images")
-        self._add_images_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._add_images_button.setStyleSheet(
-            f"QPushButton {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY};"
-            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 9px 12px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
-        )
-        self._add_images_button.setToolTip(shortcut_tooltip("Add images to the queue", "A"))
-        self._add_images_button.clicked.connect(self._on_add_images)
-        layout.addWidget(self._add_images_button)
-        self._shortcut_bindings.append((self._add_images_button, "A"))
-
         self._queue_list = _QueueList()
         self._queue_list.setStyleSheet(
             f"""
             QListWidget {{
-                background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 8px;
+                background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px;
             }}
             QListWidget::item {{ border-bottom: 1px solid {BORDER_COLOR}; }}
             QListWidget::item:last {{ border-bottom: none; }}
@@ -281,30 +219,17 @@ class GradePage(QWidget):
         )
         layout.addWidget(self._queue_status_label)
 
-        self._grade_all_button = QPushButton("Grade All")
+        self._grade_all_button = QPushButton("Grade all")
         self._grade_all_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._grade_all_button.setFixedHeight(46)
-        self._grade_all_button.setStyleSheet(
-            accent_button_qss(extra="font-weight: 700; font-size: 14px; padding: 0px;")
-        )
-        self._grade_all_button.setToolTip(shortcut_tooltip("Grade every image in the queue", "R"))
+        self._grade_all_button.setStyleSheet(accent_button_qss())
         self._grade_all_button.clicked.connect(self._on_grade_all)
         layout.addWidget(self._grade_all_button)
-        self._shortcut_bindings.append((self._grade_all_button, "R"))
 
-        self._clear_all_button = QPushButton("Clear All")
-        self._clear_all_button.setObjectName("clearAllLink")
+        self._clear_all_button = QPushButton("Clear queue")
         self._clear_all_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._clear_all_button.setStyleSheet(
-            f"QPushButton#clearAllLink {{ background: transparent; color: {TEXT_SECONDARY}; border: none;"
-            f"font-size: 12px; padding: 4px; }}"
-            f"QPushButton#clearAllLink:hover {{ color: {TEXT_PRIMARY}; text-decoration: underline; }}"
-            f"QPushButton#clearAllLink:disabled {{ color: #4A4D55; }}"
-        )
-        self._clear_all_button.setToolTip(shortcut_tooltip("Clear the queue", "K"))
+        self._clear_all_button.setStyleSheet(link_button_qss())
         self._clear_all_button.clicked.connect(self._on_clear_all)
         layout.addWidget(self._clear_all_button, 0, Qt.AlignmentFlag.AlignLeft)
-        self._shortcut_bindings.append((self._clear_all_button, "K"))
 
         return container
 
@@ -343,20 +268,18 @@ class GradePage(QWidget):
             # selector -- QLabel is itself a QFrame subclass in Qt, so an
             # unscoped rule here would also draw this border around the
             # word-wrapped message label nested inside, not just the banner.
-            f"QFrame#noModelBanner {{ background-color: rgba(232, 168, 56, 30); border: 1px solid {ACCENT_COLOR};"
-            f"border-radius: 8px; }}"
+            f"QFrame#noModelBanner {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR};"
+            f"border-radius: 3px; }}"
         )
         banner.clicked.connect(self._navigate_to_model_library)
 
         banner_layout = QVBoxLayout(banner)
         banner_layout.setContentsMargins(24, 20, 24, 20)
 
-        message = QLabel(
-            "No model loaded. Pick one in Model Library first. \u2192"
-        )
+        message = QLabel("No model loaded. Open Models in the sidebar.")
         message.setWordWrap(True)
         message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        message.setStyleSheet(f"color: {ACCENT_COLOR}; font-size: 14px; font-weight: 600; background: transparent;")
+        message.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; background: transparent;")
         banner_layout.addWidget(message)
 
         layout.addWidget(banner)
@@ -368,13 +291,16 @@ class GradePage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         frame = QFrame()
-        frame.setStyleSheet(f"QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}")
+        frame.setStyleSheet(
+            f"QFrame {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}"
+            f"{LABEL_RESET_QSS}"
+        )
         frame_layout = QVBoxLayout(frame)
         frame_layout.setContentsMargins(18, 18, 18, 18)
         frame_layout.setSpacing(14)
 
         self._not_graded_preview = _AdaptiveImageLabel()
-        self._not_graded_preview.setStyleSheet(f"background-color: {BACKGROUND_COLOR}; border-radius: 8px;")
+        self._not_graded_preview.setStyleSheet(f"background-color: {BACKGROUND_COLOR}; border-radius: 3px;")
         frame_layout.addWidget(self._not_graded_preview, 1)
 
         self._not_graded_placeholder = QLabel("Select an image from the queue to preview it.")
@@ -383,20 +309,12 @@ class GradePage(QWidget):
         self._not_graded_placeholder.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; background: transparent;")
         frame_layout.addWidget(self._not_graded_placeholder)
 
-        self._grade_this_button = QPushButton("Grade This Image")
+        self._grade_this_button = QPushButton("Grade this photo")
         self._grade_this_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._grade_this_button.setFixedHeight(42)
-        self._grade_this_button.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {ACCENT_COLOR}; font-weight: 700; font-size: 13px;"
-            f"border: 1px solid {ACCENT_COLOR}; border-radius: 6px; padding: 0 20px; }}"
-            f"QPushButton:hover {{ background-color: rgba(232, 168, 56, 25); }}"
-            f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid {BORDER_COLOR}; }}"
-        )
-        self._grade_this_button.setToolTip(shortcut_tooltip("Grade the selected image", "D"))
+        self._grade_this_button.setStyleSheet(ghost_button_qss())
         self._grade_this_button.clicked.connect(self._on_grade_this_image)
         self._grade_this_button.setEnabled(False)
         frame_layout.addWidget(self._grade_this_button, 0, Qt.AlignmentFlag.AlignHCenter)
-        self._shortcut_bindings.append((self._grade_this_button, "D"))
 
         layout.addWidget(frame, 1)
         return page
@@ -408,16 +326,22 @@ class GradePage(QWidget):
         layout.setSpacing(14)
 
         preview_frame = QFrame()
-        preview_frame.setStyleSheet(f"QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}")
+        preview_frame.setStyleSheet(
+            f"QFrame {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}"
+            f"{LABEL_RESET_QSS}"
+        )
         preview_layout = QVBoxLayout(preview_frame)
         preview_layout.setContentsMargins(14, 14, 14, 14)
         self._single_preview = _AdaptiveImageLabel()
-        self._single_preview.setStyleSheet(f"background-color: {BACKGROUND_COLOR}; border-radius: 8px;")
+        self._single_preview.setStyleSheet(f"background-color: {BACKGROUND_COLOR}; border-radius: 3px;")
         preview_layout.addWidget(self._single_preview)
         layout.addWidget(preview_frame, 1)
 
         results_frame = QFrame()
-        results_frame.setStyleSheet(f"QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}")
+        results_frame.setStyleSheet(
+            f"QFrame {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}"
+            f"{LABEL_RESET_QSS}"
+        )
         results_layout = QVBoxLayout(results_frame)
         results_layout.setContentsMargins(18, 16, 18, 16)
         results_layout.setSpacing(12)
@@ -486,30 +410,15 @@ class GradePage(QWidget):
 
         self._export_button = QPushButton("Export CSV")
         self._export_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._export_button.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {TEXT_PRIMARY}; border: 1px solid {BORDER_COLOR};"
-            f"border-radius: 6px; padding: 9px 16px; font-size: 12px; }}"
-            f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
-            f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid #2A2D34; }}"
-        )
-        self._export_button.setToolTip(shortcut_tooltip("Export results to CSV", "E"))
+        self._export_button.setStyleSheet(ghost_button_qss())
         self._export_button.clicked.connect(self._on_export_results)
         action_row.addWidget(self._export_button)
-        self._shortcut_bindings.append((self._export_button, "E"))
 
-        self._clear_results_button = QPushButton("Clear Results")
-        self._clear_results_button.setObjectName("clearResultsLink")
+        self._clear_results_button = QPushButton("Clear results")
         self._clear_results_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._clear_results_button.setStyleSheet(
-            f"QPushButton#clearResultsLink {{ background: transparent; color: {TEXT_SECONDARY}; border: none;"
-            f"font-size: 12px; padding: 9px 4px; }}"
-            f"QPushButton#clearResultsLink:hover {{ color: {TEXT_PRIMARY}; text-decoration: underline; }}"
-            f"QPushButton#clearResultsLink:disabled {{ color: #4A4D55; }}"
-        )
-        self._clear_results_button.setToolTip(shortcut_tooltip("Clear graded results", "X"))
+        self._clear_results_button.setStyleSheet(link_button_qss())
         self._clear_results_button.clicked.connect(self._on_clear_results)
         action_row.addWidget(self._clear_results_button)
-        self._shortcut_bindings.append((self._clear_results_button, "X"))
 
         action_row.addStretch(1)
         layout.addLayout(action_row)
@@ -518,7 +427,10 @@ class GradePage(QWidget):
 
     def _build_batch_summary_card(self) -> None:
         card = QFrame()
-        card.setStyleSheet(f"QFrame {{ background-color: {SURFACE_COLOR}; border-radius: 8px; }}")
+        card.setStyleSheet(
+            f"QFrame {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}"
+            f"{LABEL_RESET_QSS}"
+        )
 
         layout = QHBoxLayout(card)
         layout.setContentsMargins(18, 14, 18, 14)
@@ -526,26 +438,30 @@ class GradePage(QWidget):
 
         for title in ("Images graded", "Avg Water", "Avg Solids", "Avg Bitumen", "Avg sum off-by", "Sum warnings (>5%)"):
             self._batch_summary_labels[title] = self._build_stat_block(layout, title)
-        layout.addStretch(1)
 
         self._batch_summary_card = card
 
     def _build_stat_block(self, layout: QHBoxLayout, title: str) -> QLabel:
-        block = QVBoxLayout()
+        wrapper = QWidget()
+        wrapper.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        block = QVBoxLayout(wrapper)
+        block.setContentsMargins(0, 0, 0, 0)
         block.setSpacing(2)
 
         title_label = QLabel(title)
         title_label.setWordWrap(True)
+        title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         title_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         block.addWidget(title_label)
 
         value_label = QLabel("\u2014")
+        value_label.setWordWrap(True)
         value_label.setStyleSheet(
             f"color: {TEXT_PRIMARY}; font-size: 18px; font-weight: 700; background: transparent;"
         )
         block.addWidget(value_label)
 
-        layout.addLayout(block)
+        layout.addWidget(wrapper, 1)
         return value_label
 
     def _build_batch_table(self) -> QTableWidget:
@@ -564,7 +480,7 @@ class GradePage(QWidget):
                 border: 1px solid {BORDER_COLOR}; border-radius: 6px; gridline-color: {BORDER_COLOR};
             }}
             QTableWidget::item {{ padding: 4px; }}
-            QTableWidget::item:selected {{ background-color: rgba(232, 168, 56, 45); color: {TEXT_PRIMARY}; }}
+            QTableWidget::item:selected {{ background-color: {SURFACE_HOVER_COLOR}; color: {TEXT_PRIMARY}; }}
             QHeaderView::section {{
                 background-color: {SURFACE_COLOR}; color: {TEXT_SECONDARY}; border: none;
                 padding: 6px; font-size: 10px; font-weight: 600;
@@ -584,21 +500,13 @@ class GradePage(QWidget):
         active_model = getattr(self.main_window, "active_model", None) if self.main_window else None
 
         if not active_model:
-            self._model_value_label.setText("No model loaded \u2014 open Model Library first.")
-            self._model_value_label.setStyleSheet(
-                f"color: {ACCENT_COLOR}; font-size: 13px; font-weight: 600; background: transparent;"
-            )
+            self._model_value_label.setText("No model — open Models in the sidebar")
             return
 
         metadata = active_model.get("metadata") or {}
         name = metadata.get("name") or Path(active_model.get("path", "")).stem
         date_str = format_created_at(metadata.get("created_at"))
-        text = f"{name} \u2014 {date_str}" if date_str else name
-
-        self._model_value_label.setText(text)
-        self._model_value_label.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600; background: transparent;"
-        )
+        self._model_value_label.setText(f"{name}  {date_str}".strip())
 
     def _navigate_to_model_library(self) -> None:
         if self.main_window is not None:
@@ -608,89 +516,28 @@ class GradePage(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: D401 - Qt override
         super().showEvent(event)
-        self._sync_from_main_window()
         self._refresh_top_bar()
         self._refresh_right_column()
-        bind_page_shortcuts(self._shortcut_bindings)
-        if not self._tab_order_applied:
-            self._apply_tab_order()
-            self._tab_order_applied = True
-
-    def hideEvent(self, event) -> None:  # noqa: D401 - Qt override
-        super().hideEvent(event)
-        unbind_page_shortcuts(self._shortcut_bindings)
-
-    def _sync_from_main_window(self) -> None:
-        """Pull paths from ``main_window.grading_images`` and open each from disk.
-
-        Import only sends paths (not decoded images) so big batches don't
-        double RAM use; we open each file the same way as Add Images.
-        """
-        if self.main_window is None:
-            return
-        incoming = getattr(self.main_window, "grading_images", None)
-        if not incoming:
-            return
-
-        existing_paths = {q.path for q in self._queue}
-        added_any = False
-        failed_names: List[str] = []
-        for entry in incoming:
-            path = entry.get("path")
-            if not path or path in existing_paths or not path.lower().endswith(IMAGE_EXTENSIONS):
-                continue
-            try:
-                with Image.open(path) as opened:
-                    opened.load()
-                    image = opened.convert("RGB")
-            except (OSError, ValueError):
-                failed_names.append(Path(path).name)
-                continue
-            self._add_queue_image(path, image)
-            existing_paths.add(path)
-            added_any = True
-
-        if added_any:
-            self._update_queue_status_label()
-            self._update_action_buttons_enabled()
-
-        if failed_names:
-            self._show_image_load_error(failed_names)
-
-        self.main_window.grading_images = None
-
-    def _on_add_images(self) -> None:
-        file_filter = "Images (*.jpg *.jpeg *.png *.tif)"
-        paths, _ = QFileDialog.getOpenFileNames(self, "Select Images", "", file_filter)
-        if paths:
-            self._add_images(paths)
 
     def _add_images(self, paths: List[str]) -> None:
+        if not paths:
+            self._error_label.setText("No JPG/PNG/TIF photos in that folder or selection.")
+            self._error_label.setVisible(True)
+            return
+
         existing_paths = {q.path for q in self._queue}
-        added_any = False
-        failed_names: List[str] = []
-        for path in paths:
-            if not path.lower().endswith(IMAGE_EXTENSIONS) or path in existing_paths:
-                continue
-            try:
-                with Image.open(path) as opened:
-                    opened.load()
-                    image = opened.convert("RGB")
-            except (OSError, ValueError):
-                failed_names.append(Path(path).name)
-                continue
-            self._add_queue_image(path, image)
-            existing_paths.add(path)
-            added_any = True
+        added = unique_paths(existing_paths, (p for p in paths if is_image_path(p)))
+        if not added:
+            return
 
-        if added_any:
-            self._update_queue_status_label()
-            self._update_action_buttons_enabled()
+        for path in added:
+            self._add_queue_image(path)
 
-        if failed_names:
-            self._show_image_load_error(failed_names)
-        elif added_any:
-            self._error_label.setVisible(False)
+        self._error_label.setVisible(False)
+        self._update_queue_status_label()
+        self._update_action_buttons_enabled()
+        if self._selected_id is None and self._queue:
+            self._queue_list.setCurrentItem(self._queue[0].item)
 
     def _show_image_load_error(self, failed_names: List[str]) -> None:
         names = ", ".join(failed_names[:3])
@@ -700,15 +547,15 @@ class GradePage(QWidget):
         self._error_label.setText(f"Couldn't load {len(failed_names)} {count_word}: {names}")
         self._error_label.setVisible(True)
 
-    def _add_queue_image(self, path: str, image: Image.Image) -> None:
-        widget = _QueueItemWidget(Path(path).name, image)
+    def _add_queue_image(self, path: str) -> None:
+        widget = _QueueItemWidget(Path(path).name)
         list_item = QListWidgetItem()
         list_item.setSizeHint(widget.sizeHint())
 
         self._queue_list.addItem(list_item)
         self._queue_list.setItemWidget(list_item, widget)
 
-        queue_image = _QueueImage(id=next(self._id_counter), path=path, image=image, item=list_item, widget=widget)
+        queue_image = _QueueImage(id=next(self._id_counter), path=path, item=list_item, widget=widget)
         self._queue.append(queue_image)
 
     def _update_queue_status_label(self) -> None:
@@ -784,7 +631,7 @@ class GradePage(QWidget):
 
         self._pending_output_stats = metadata.get("output_stats") or {}
         self._pending_grade_all = grade_all
-        payload = [(queue_image.id, queue_image.image) for queue_image in images_to_grade]
+        payload = [(queue_image.id, queue_image.path) for queue_image in images_to_grade]
 
         self._loading_overlay.show_message("Grading all images\u2026" if grade_all else "Grading\u2026")
         self._set_grading_active(True)
@@ -806,8 +653,6 @@ class GradePage(QWidget):
         """Disable controls while grading is running."""
         for button in (
             self._grade_all_button,
-            self._add_images_button,
-            self._change_model_button,
             self._clear_all_button,
             self._grade_this_button,
         ):
@@ -904,17 +749,23 @@ class GradePage(QWidget):
             return
 
         if queue_image.result is None:
-            self._not_graded_preview.set_source_image(queue_image.image)
+            self._not_graded_preview.set_source_image(self._preview_image(queue_image.path))
             self._not_graded_placeholder.setVisible(False)
             self._grade_this_button.setEnabled(True)
             self._right_stack.setCurrentWidget(self._not_graded_page)
             return
 
-        self._single_preview.set_source_image(queue_image.image)
+        self._single_preview.set_source_image(self._preview_image(queue_image.path))
         self._update_measurement_table(queue_image.result, queue_image.output_stats or {})
         self._update_range_bars(queue_image.result, queue_image.output_stats or {})
         self._update_pan_grade_card(queue_image.result, queue_image.output_stats or {})
         self._right_stack.setCurrentWidget(self._single_result_page)
+
+    def _preview_image(self, path: str):
+        try:
+            return load_rgb_image(path)
+        except (OSError, ValueError):
+            return None
 
     def _update_measurement_table(self, result: Dict[str, Any], output_stats: Dict[str, Dict[str, float]]) -> None:
         training_avgs = {label: output_stats.get(label, {}).get("mean", 0.0) for label in OUTPUT_NAMES}

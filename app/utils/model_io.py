@@ -54,6 +54,8 @@ def save_model(
         "test_loss": result.test_loss,
         "test_mae": result.test_mae,
         "test_r2": getattr(result, "test_r2", None),
+        "best_val_cls_acc": getattr(result, "best_val_cls_acc", None),
+        "test_cls_acc": getattr(result, "test_cls_acc", None),
         "test_sum_deviation": result.test_sum_deviation,
         "final_epoch": result.final_epoch,
         "stopped_early": result.stopped_early,

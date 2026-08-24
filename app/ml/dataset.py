@@ -1,5 +1,4 @@
 import math
-import os
 import random
 import re
 from collections import defaultdict
@@ -9,7 +8,9 @@ import torch
 from torch.utils.data import Dataset
 
 from app.constants import IMAGE_EXTENSIONS
+from app.ml.recipe import CLS_BINS, TEST_FRACTION, VAL_FRACTION
 from app.utils.data_io import read_labels_file
+from app.utils.media import collect_images
 from app.utils.image_utils import IMAGE_SIZE, build_eval_transforms, build_train_transforms, prepare_image
 
 
@@ -75,9 +76,9 @@ class RegressionDataset(Dataset):
         csv_path,
         image_dir,
         split="train",
-        val_fraction=0.2,
-        test_fraction=0.15,
-        normalise=True,
+        val_fraction=VAL_FRACTION,
+        test_fraction=TEST_FRACTION,
+        normalise=False,
         seed=42,
         split_mode="random",
         image_size=IMAGE_SIZE,
@@ -111,9 +112,7 @@ class RegressionDataset(Dataset):
         if missing_columns:
             raise ValueError(f"CSV is missing expected columns: {missing_columns}")
 
-        filenames = os.listdir(self.image_dir)
-        filename_set = set(filenames)
-        stem_lookup = {Path(name).stem: name for name in filenames}
+        by_name, by_stem = self._index_images(self.image_dir)
 
         self.matched = []
         self.unmatched = []
@@ -122,21 +121,27 @@ class RegressionDataset(Dataset):
         self.invalid_rows = []
 
         for _, row in df.iterrows():
-            image_value = str(row["Image"])
-            matched_name = None
+            image_value = str(row["Image"]).strip()
+            matched_rel = None
 
-            if image_value in filename_set:
-                matched_name = image_value
-            elif image_value in stem_lookup:
-                matched_name = stem_lookup[image_value]
+            if image_value in by_name:
+                matched_rel = by_name[image_value]
+            elif Path(image_value).name in by_name:
+                matched_rel = by_name[Path(image_value).name]
+            elif Path(image_value).stem in by_stem:
+                matched_rel = by_stem[Path(image_value).stem]
             else:
                 for extension in self.EXTENSION_CANDIDATES:
                     candidate = image_value + extension
-                    if candidate in filename_set:
-                        matched_name = candidate
+                    if candidate in by_name:
+                        matched_rel = by_name[candidate]
+                        break
+                    candidate_name = Path(image_value).name + extension
+                    if candidate_name in by_name:
+                        matched_rel = by_name[candidate_name]
                         break
 
-            if matched_name is None:
+            if matched_rel is None:
                 self.unmatched.append(image_value)
                 continue
 
@@ -152,12 +157,12 @@ class RegressionDataset(Dataset):
 
             self.matched.append(
                 {
-                    "image_path": self.image_dir / matched_name,
+                    "image_path": self.image_dir / matched_rel,
                     "water": water,
                     "solids": solids,
                     "bitumen": bitumen,
                     "pan": pan,
-                    "campaign": parse_campaign_id(matched_name, row),
+                    "campaign": parse_campaign_id(Path(matched_rel).name, row),
                 }
             )
 
@@ -179,13 +184,32 @@ class RegressionDataset(Dataset):
             self.data = test_portion
 
         self.output_stats = {}
+        self.bin_edges = {}
         for key, label in (("water", "Water"), ("solids", "Solids"), ("bitumen", "Bitumen")):
-            mean, std = self._compute_mean_std([item[key] for item in train_portion])
+            train_values = [item[key] for item in train_portion]
+            mean, std = self._compute_mean_std(train_values)
             self.output_stats[label] = {"mean": mean, "std": std}
+            self.bin_edges[label] = self._equal_frequency_edges(train_values, CLS_BINS)
 
         self.train_transforms = build_train_transforms(self.image_size)
         self.val_transforms = build_eval_transforms(self.image_size, legacy_crop=self.legacy_crop)
         self.transforms = self.train_transforms if split == "train" else self.val_transforms
+
+    @staticmethod
+    def _index_images(image_dir: Path):
+        """Map CSV names (basename, relative path, or stem) to a path under ``image_dir``."""
+        by_name = {}
+        by_stem = {}
+        for path_str in collect_images(image_dir):
+            path = Path(path_str)
+            try:
+                rel = str(path.relative_to(image_dir))
+            except ValueError:
+                rel = path.name
+            by_name[path.name] = rel
+            by_name[rel] = rel
+            by_stem[path.stem] = rel
+        return by_name, by_stem
 
     def _assign_splits(self, matched, val_fraction, test_fraction, seed, split_mode):
         if split_mode == "experiment":
@@ -353,8 +377,27 @@ class RegressionDataset(Dataset):
 
         return image_tensor, torch.tensor(target, dtype=torch.float32)
 
+    @staticmethod
+    def _equal_frequency_edges(values, n_bins=CLS_BINS):
+        """Interior edges for equal-frequency bins, computed on train labels only."""
+        if n_bins < 2 or len(values) < n_bins:
+            return []
+        ordered = sorted(values)
+        count = len(ordered)
+        edges = []
+        for index in range(1, n_bins):
+            position = min(count - 1, max(1, round(index * count / n_bins)))
+            edges.append(float(ordered[position]))
+        for index in range(1, len(edges)):
+            if edges[index] <= edges[index - 1]:
+                edges[index] = edges[index - 1] + 1e-6
+        return edges
+
     def get_output_stats(self):
         return self.output_stats
+
+    def get_bin_edges(self):
+        return self.bin_edges
 
     def get_match_summary(self):
         match_rate = len(self.matched) / self.total_csv_rows if self.total_csv_rows else 0.0

@@ -24,7 +24,7 @@ _DUMMY_OUTPUT_STATS = {
 }
 
 
-def _make_dummy_result(output_stats=None, normalise_targets: bool = True) -> RegressionTrainingResult:
+def _make_dummy_result(output_stats=None, normalise_targets: bool = False) -> RegressionTrainingResult:
     """Minimal RegressionTrainingResult for save_model tests."""
     return RegressionTrainingResult(
         best_val_loss=0.01,
@@ -39,6 +39,9 @@ def _make_dummy_result(output_stats=None, normalise_targets: bool = True) -> Reg
                 "water_mae": 1.2,
                 "solids_mae": 0.8,
                 "bitumen_mae": 1.5,
+                "water_r2": 0.4,
+                "solids_r2": 0.5,
+                "bitumen_r2": 0.6,
                 "sum_deviation": 3.0,
             }
         ],
@@ -47,6 +50,10 @@ def _make_dummy_result(output_stats=None, normalise_targets: bool = True) -> Reg
         test_mae={"Water": 0.40, "Solids": 0.25, "Bitumen": 0.60},
         test_loss=0.02,
         test_sum_deviation=1.5,
+        best_val_r2={"Water": 0.50, "Solids": 0.55, "Bitumen": 0.70},
+        test_r2={"Water": 0.48, "Solids": 0.52, "Bitumen": 0.66},
+        best_val_cls_acc={"Water": 0.6, "Solids": 0.7, "Bitumen": 0.8},
+        test_cls_acc={"Water": 0.55, "Solids": 0.65, "Bitumen": 0.75},
     )
 
 
@@ -206,16 +213,41 @@ def test_regression_dataset_filename_matching(tmp_path: Path) -> None:
     output_stats = dataset.get_output_stats()
     assert set(output_stats.keys()) == {"Water", "Solids", "Bitumen"}
 
-    crop = next(
-        step for step in dataset.train_transforms.transforms if type(step).__name__ == "RandomResizedCrop"
-    )
-    assert getattr(crop, "size", None) == (256, 256) or getattr(crop, "size", None) == 256
-    assert getattr(crop, "scale", None) == (0.8, 1.0)
+    crop_names = [type(step).__name__ for step in dataset.train_transforms.transforms]
+    assert "RandomResizedCrop" not in crop_names
+    assert "ColorJitter" not in crop_names
+    assert "RandomHorizontalFlip" in crop_names
     resize = dataset.train_transforms.transforms[0]
     assert getattr(resize, "size", None) == (256, 256) or getattr(resize, "size", None) == 256
 
     tensor, _target = dataset[0]
     assert tuple(tensor.shape) == (3, 256, 256)
+
+
+def test_dataset_matches_images_in_nested_folders(tmp_path: Path) -> None:
+    """Labels can name a file that lives in a subfolder of the photo directory."""
+    from app.utils.media import collect_images
+
+    nested = tmp_path / "photos" / "run_a"
+    nested.mkdir(parents=True)
+    Image.new("RGB", (32, 32), color=(10, 20, 30)).save(nested / "sample_0.jpg")
+    Image.new("RGB", (32, 32), color=(40, 50, 60)).save(nested / "sample_1.jpg")
+    csv_path = tmp_path / "labels.csv"
+    pd.DataFrame(
+        [
+            {"Image": "sample_0.jpg", "Pan": 3, "Water": 10.0, "Solids": 20.0, "Bitumen": 70.0},
+            {"Image": "sample_1", "Pan": 4, "Water": 11.0, "Solids": 21.0, "Bitumen": 68.0},
+        ]
+    ).to_csv(csv_path, index=False)
+
+    found = collect_images(tmp_path / "photos")
+    assert len(found) == 2
+
+    dataset = RegressionDataset(
+        str(csv_path), str(tmp_path / "photos"), split="train", val_fraction=0.0, test_fraction=0.0, seed=42
+    )
+    assert dataset.get_match_summary()["matched"] == 2
+    assert dataset.get_match_summary()["unmatched"] == 0
 
 
 def test_regression_dataset_train_val_test_split(tmp_path: Path) -> None:
@@ -284,15 +316,15 @@ def test_mixed_source_resolutions_standardize_to_model_size(tmp_path: Path) -> N
     assert capped.size == (512, 384)
 
 
-def test_trainer_optimized_recipe_runs(tmp_path: Path) -> None:
-    """Short run with freeze / cosine / sum penalty / test eval finishes."""
+def test_trainer_paper_recipe_runs(tmp_path: Path) -> None:
+    """Short Adam + MSE run reports R², 3-bin accuracy, and a test eval."""
     csv_path, image_dir = _write_tiny_dataset(tmp_path, count=12)
     common = dict(
         csv_path=str(csv_path),
         image_dir=str(image_dir),
         val_fraction=0.25,
         test_fraction=0.25,
-        normalise=True,
+        normalise=False,
         seed=42,
     )
     train_ds = RegressionDataset(split="train", **common)
@@ -311,16 +343,12 @@ def test_trainer_optimized_recipe_runs(tmp_path: Path) -> None:
         device=torch.device("cpu"),
         learning_rate=0.001,
         num_epochs=2,
-        weight_decay=0.0001,
         output_stats=train_ds.get_output_stats(),
-        normalise_targets=True,
-        patience=5,
+        normalise_targets=False,
+        patience=0,
         test_loader=test_loader,
-        use_differential_lrs=True,
-        use_cosine_schedule=True,
-        freeze_backbone_epochs=1,
-        sum_penalty_weight=0.1,
-        adaptation="ft",
+        adaptation="scratch",
+        bin_edges=train_ds.get_bin_edges(),
     )
 
     finished = []
@@ -334,7 +362,15 @@ def test_trainer_optimized_recipe_runs(tmp_path: Path) -> None:
     result = finished[0]
     assert result.test_mae is not None
     assert set(result.test_mae.keys()) == {"Water", "Solids", "Bitumen"}
-    assert result.final_epoch >= 1
+    assert result.test_r2 is not None
+    assert set(result.test_r2.keys()) == {"Water", "Solids", "Bitumen"}
+    assert result.test_cls_acc is not None
+    assert result.final_epoch == 2
+    assert result.stopped_early is False
+    assert result.normalise_targets is False
+    history = result.training_history[0]
+    assert "bitumen_r2" in history
+    assert "bitumen_cls_acc" in history
 
 
 def test_save_model_and_list_saved_models_round_trip(tmp_path: Path) -> None:
@@ -357,7 +393,7 @@ def test_save_model_and_list_saved_models_round_trip(tmp_path: Path) -> None:
     assert metadata["model_type"] == "regression"
     assert metadata["output_names"] == ["Water", "Solids", "Bitumen"]
     assert set(metadata["best_val_mae"].keys()) == {"Water", "Solids", "Bitumen"}
-    assert metadata["normalise_targets"] is True
+    assert metadata["normalise_targets"] is False
     assert metadata["test_loss"] == 0.02
     assert metadata["architecture"] == "baseline"
     assert metadata["head"] == "native"
@@ -449,11 +485,7 @@ def test_continue_training_from_checkpoint(tmp_path: Path) -> None:
         output_stats=train_ds.get_output_stats(),
         normalise_targets=True,
         patience=5,
-        freeze_backbone_epochs=0,
-        sum_penalty_weight=0.0,
         adaptation="scratch",
-        use_differential_lrs=False,
-        use_cosine_schedule=False,
     )
     finished = []
     trainer.finished.connect(finished.append)
@@ -481,11 +513,7 @@ def test_continue_training_from_checkpoint(tmp_path: Path) -> None:
         output_stats=train_ds.get_output_stats(),
         normalise_targets=True,
         patience=5,
-        freeze_backbone_epochs=0,
-        sum_penalty_weight=0.0,
         adaptation="ft",
-        use_differential_lrs=False,
-        use_cosine_schedule=False,
     )
     finished2 = []
     errors2 = []
@@ -521,15 +549,53 @@ def test_feature_extraction_keeps_backbone_frozen(tmp_path: Path) -> None:
         output_stats=train_ds.get_output_stats(),
         normalise_targets=True,
         patience=5,
-        freeze_backbone_epochs=0,
-        sum_penalty_weight=0.0,
         adaptation="fe",
-        use_differential_lrs=False,
-        use_cosine_schedule=False,
     )
     trainer.run()
     assert all(not parameter.requires_grad for parameter in model.backbone_parameters())
     assert all(parameter.requires_grad for parameter in model.head_parameters())
+
+
+def test_paper_recipe_constants() -> None:
+    from app.ml.recipe import (
+        BATCH_SIZE,
+        CLS_BINS,
+        LEARNING_RATE_FE,
+        LEARNING_RATE_FT,
+        NUM_EPOCHS,
+        TEST_FRACTION,
+        VAL_FRACTION,
+        WEIGHT_DECAY,
+        learning_rate_for_adaptation,
+    )
+
+    assert BATCH_SIZE == 32
+    assert NUM_EPOCHS == 100
+    assert LEARNING_RATE_FT == 1e-4
+    assert LEARNING_RATE_FE == 1e-3
+    assert WEIGHT_DECAY == 0.0
+    assert CLS_BINS == 3
+    assert abs(TEST_FRACTION - 0.20) < 1e-9
+    assert abs(VAL_FRACTION - 0.16) < 1e-9
+    assert abs(1.0 - VAL_FRACTION - TEST_FRACTION - 0.64) < 1e-9
+    assert learning_rate_for_adaptation("fe") == LEARNING_RATE_FE
+    assert learning_rate_for_adaptation("ft") == LEARNING_RATE_FT
+    assert learning_rate_for_adaptation("scratch") == LEARNING_RATE_FT
+
+
+def test_dataset_raw_percentages_and_equal_frequency_bins(tmp_path: Path) -> None:
+    csv_path, image_dir = _write_tiny_dataset(tmp_path, count=12)
+    dataset = RegressionDataset(
+        str(csv_path), str(image_dir), split="train", val_fraction=0.25, test_fraction=0.25, seed=42
+    )
+    assert dataset.normalise is False
+    _, target = dataset[0]
+    assert float(target.min()) >= 0.0
+    edges = dataset.get_bin_edges()
+    assert set(edges) == {"Water", "Solids", "Bitumen"}
+    for name in edges:
+        assert len(edges[name]) == 2
+        assert edges[name][0] < edges[name][1]
 
 
 def test_legacy_resnet18_round_trip(tmp_path: Path) -> None:
