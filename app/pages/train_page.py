@@ -1,7 +1,7 @@
 """
 Train page.
 
-Load a labelled CSV, pick the image folder, choose architecture and split,
+Load a labelled table, pick the image folder, choose architecture,
 and run training. ``RegressionDataset`` handles matching/splitting; this page
 just builds the summaries and wires ``RegressionTrainer`` to the progress panel.
 """
@@ -40,11 +40,11 @@ from app.ml.cnn_model import (
     ARCHITECTURE_LABELS,
     TRAINABLE_ARCHITECTURES,
     BitumenRegressor,
-    IMAGE_SIZE,
 )
 from app.ml.dataset import RegressionDataset
 from app.ml.recipe import (
     BATCH_SIZE,
+    IMAGE_SIZE,
     DEFAULT_SPLIT_MODE,
     NUM_EPOCHS,
     TEST_FRACTION,
@@ -696,7 +696,7 @@ class TrainPage(QWidget):
         self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
 
     def prepare_retrain(self, metadata: Dict) -> None:
-        """Pre-select a library model so the user can continue it on a new dataset."""
+        """Pre-select a saved model so the user can continue it on a new dataset."""
         if self._continue_checkbox is None:
             return
         self._refresh_continue_combo()
@@ -904,6 +904,7 @@ class TrainPage(QWidget):
                 split_mode=train_dataset.split_mode,
                 split_campaigns=train_dataset.split_campaigns,
                 split_fallback_reason=train_dataset.split_fallback_reason,
+                image_size=kwargs["image_size"],
             )
             self._step3_frame.setVisible(True)
         else:
@@ -1057,6 +1058,7 @@ class TrainPage(QWidget):
             test_loader=test_loader,
             adaptation=adaptation,
             bin_edges=train_dataset.get_bin_edges(),
+            init_output_bias=not continuing,
         )
 
         image_size = kwargs["image_size"]

@@ -84,18 +84,6 @@ def ghost_button_qss(*, extra: str = "") -> str:
     )
 
 
-def secondary_button_qss() -> str:
-    return (
-        f"QPushButton {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY};"
-        f"border: 1px solid {BORDER_COLOR}; border-radius: {RADIUS_SM}px;"
-        f"padding: 6px 10px; min-height: 24px; font-size: 12px; }}"
-        f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
-        f"QPushButton:pressed {{ background-color: {NAV_HOVER_COLOR}; }}"
-        f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid {SEPARATOR_COLOR}; }}"
-        f"QPushButton:focus {{ outline: none; }}"
-    )
-
-
 def danger_outline_button_qss() -> str:
     return (
         f"QPushButton {{ background-color: transparent; color: {DANGER_COLOR};"
@@ -121,8 +109,7 @@ def link_button_qss(*, color: str = TEXT_SECONDARY) -> str:
 
 # QLabel is a QFrame subclass, so a bare "QFrame { border }" rule also wraps
 # every label. Re-assert labels as plain text after any such rule.
-_LABEL_RESET_QSS = "QLabel { border: none; background: transparent; }"
-LABEL_RESET_QSS = _LABEL_RESET_QSS
+LABEL_RESET_QSS = "QLabel { border: none; background: transparent; }"
 
 
 def drop_zone_qss(object_name: str, *, active: bool) -> str:
@@ -131,7 +118,7 @@ def drop_zone_qss(object_name: str, *, active: bool) -> str:
     return (
         f"QFrame#{object_name} {{ background-color: {background}; border: 1px dashed {border};"
         f"border-radius: {RADIUS_SM}px; }}"
-        f"{_LABEL_RESET_QSS}"
+        f"{LABEL_RESET_QSS}"
     )
 
 
@@ -140,7 +127,7 @@ def card_qss(*, inset: bool = False) -> str:
     return (
         f"QFrame {{ background-color: {fill}; border: 1px solid {BORDER_COLOR};"
         f"border-radius: {RADIUS_SM}px; }}"
-        f"{_LABEL_RESET_QSS}"
+        f"{LABEL_RESET_QSS}"
     )
 
 

@@ -16,7 +16,7 @@ matplotlib.use("QtAgg")
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
-from PyQt6.QtCore import Qt, pyqtSignal  # noqa: E402
+from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QFrame,
     QHBoxLayout,
@@ -56,9 +56,6 @@ class ProgressPanel(QWidget):
     ``note_early_stopped``, then ``show_completion`` or ``show_early_stopped_banner``.
     """
 
-    #: Fired when the user clicks "View in Model Library" on the done banner.
-    #: Fired when the user wants to jump to the model library after a run.
-    view_in_library_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)

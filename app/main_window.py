@@ -32,9 +32,10 @@ from PyQt6.QtWidgets import (
 )
 
 from app.ml.predictor import RegressionPredictor
-from app.pages import GradePage, LibraryPage, TrainPage
+from app.pages import GradePage, ModelsPage, TrainPage
 from app.paths import ASSETS_DIR
 from app.theme import TEXT_PRIMARY
+from app.utils.model_io import format_r2_headline
 
 SIDEBAR_WIDTH = 148
 WINDOW_MIN_WIDTH = 1100
@@ -49,11 +50,11 @@ _FALLBACK_FONT_FAMILIES = ("Segoe UI", "Helvetica Neue", ".AppleSystemUIFont", "
 _NAV_ITEMS = [
     ("train", "Train", TrainPage),
     ("grade", "Grade", GradePage),
-    ("library", "Models", LibraryPage),
+    ("models", "Models", ModelsPage),
 ]
 
 #: Alt+letter shortcuts for sidebar nav.
-NAV_SHORTCUT_LETTERS = {"train": "T", "grade": "G", "library": "L"}
+NAV_SHORTCUT_LETTERS = {"train": "T", "grade": "G", "models": "M"}
 
 
 def _resolve_font_family() -> str:
@@ -69,7 +70,7 @@ class _Sidebar(QWidget):
     """Left nav: page names and the active model."""
 
     nav_selected = pyqtSignal(int)
-    library_requested = pyqtSignal()
+    models_requested = pyqtSignal()
 
     def __init__(self, font_family: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -101,7 +102,7 @@ class _Sidebar(QWidget):
         self._status_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._status_button.setFont(QFont(self._font_family, 11))
         self._status_button.setToolTip("Open saved models")
-        self._status_button.clicked.connect(self.library_requested.emit)
+        self._status_button.clicked.connect(self.models_requested.emit)
         layout.addWidget(self._status_button)
 
     def _build_nav_button(self, label: str, index: int, key: str) -> QPushButton:
@@ -129,7 +130,7 @@ class _Sidebar(QWidget):
         if 0 <= index < len(self._nav_buttons):
             self._nav_buttons[index].setChecked(True)
 
-    def set_active_model_label(self, display_name: Optional[str]) -> None:
+    def set_active_model_label(self, display_name: Optional[str], r2_headline: str = "") -> None:
         """Show the loaded model name, or 'No model'."""
         if self._status_button is None:
             return
@@ -137,7 +138,10 @@ class _Sidebar(QWidget):
             metrics = QFontMetrics(self._status_button.font())
             elided = metrics.elidedText(display_name, Qt.TextElideMode.ElideRight, SIDEBAR_WIDTH - 28)
             self._status_button.setText(elided)
-            self._status_button.setToolTip(f"{display_name} — click to change")
+            tooltip = f"{display_name} — click to change"
+            if r2_headline:
+                tooltip = f"{display_name}  ·  {r2_headline} — click to change"
+            self._status_button.setToolTip(tooltip)
             self._status_button.setStyleSheet(f"color: {TEXT_PRIMARY};")
         else:
             self._status_button.setText("No model")
@@ -168,7 +172,7 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         self._sidebar = _Sidebar(self._font_family)
         self._sidebar.nav_selected.connect(self._on_nav_selected)
-        self._sidebar.library_requested.connect(lambda: self.navigate_to("library"))
+        self._sidebar.models_requested.connect(lambda: self.navigate_to("models"))
 
         self._build_layout()
         self._update_window_title()
@@ -220,7 +224,7 @@ class MainWindow(QMainWindow):
         self._sidebar.set_active_index(index)
 
     def navigate_to(self, page_key: str) -> None:
-        """Show a sidebar page by key (``import``, ``train``, ``grade``, ``library``)."""
+        """Show a sidebar page by key (``train``, ``grade``, ``models``)."""
         keys = [item[0] for item in _NAV_ITEMS]
         try:
             self.navigate_to_index(keys.index(page_key))
@@ -242,7 +246,7 @@ class MainWindow(QMainWindow):
         """Set or clear the active model; update sidebar + pages.
 
         Loads the checkpoint into a ``RegressionPredictor`` up front so Grade
-        and Library can rely on ``active_model`` already having a usable predictor.
+        and Models can rely on ``active_model`` already having a usable predictor.
 
         Args:
             model_path: Path to the ``.pt`` file, or ``None`` to clear.
@@ -270,7 +274,7 @@ class MainWindow(QMainWindow):
 
         self.active_model = {"path": model_path, "metadata": metadata, "predictor": predictor}
         display_name = metadata.get("name") or Path(model_path).stem
-        self._sidebar.set_active_model_label(display_name)
+        self._sidebar.set_active_model_label(display_name, format_r2_headline(metadata))
 
         self._update_window_title()
         self.active_model_changed.emit(self.active_model)

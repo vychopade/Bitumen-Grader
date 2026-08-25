@@ -1,1 +1,1 @@
-"""Shared UI widgets: model card, progress panel, drop-zone, charts."""
+"""Shared UI widgets: model card, progress panel, charts."""

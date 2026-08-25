@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
-from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFontMetrics, QImage, QPainter, QPixmap, QResizeEvent
+from PyQt6.QtCore import QObject, QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QPainter, QPixmap, QResizeEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -17,11 +17,11 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSizePolicy,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
 
-from app.components.drop_zone import drop_has_accepted_files, dropped_local_paths
 from app.constants import IMAGE_EXTENSIONS
 from app.ml.predictor import RegressionPredictor
 from app.theme import (
@@ -37,7 +37,7 @@ from app.theme import (
     ghost_button_qss,
     link_button_qss,
 )
-from app.utils.files import pick_image_files, pick_image_folder
+from app.utils.files import pick_image_files, pick_image_folder, drop_has_accepted_files, dropped_local_paths
 from app.utils.media import collect_images
 
 
@@ -147,32 +147,55 @@ class _QueueImage:
     output_stats: Optional[Dict[str, Dict[str, float]]] = None
 
 
+def _wrappable_filename(filename: str) -> str:
+    """Wrap long camera names without splitting the extension (.jpg, .tif)."""
+    path = Path(filename)
+    stem = path.stem.replace("_", "_\u200b").replace("-", "-\u200b")
+    return stem + path.suffix
+
+
 class _QueueItemWidget(QWidget):
-    """Queue row: filename, elided to the current row width."""
+    """Queue row: full filename, wrapped to the list width."""
 
     def __init__(self, filename: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._filename = filename
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setContentsMargins(10, 8, 16, 8)
         layout.setSpacing(10)
 
-        self._name_label = QLabel()
+        self._name_label = QLabel(_wrappable_filename(filename))
+        self._name_label.setWordWrap(True)
         self._name_label.setToolTip(filename)
         self._name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self._name_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
+        self._name_label.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent; padding-right: 8px;"
+        )
         layout.addWidget(self._name_label, 1)
-        self._elide_name()
 
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._elide_name()
+    def hasHeightForWidth(self) -> bool:
+        return True
 
-    def _elide_name(self) -> None:
-        metrics = QFontMetrics(self._name_label.font())
-        width = max(40, self._name_label.width())
-        self._name_label.setText(metrics.elidedText(self._filename, Qt.TextElideMode.ElideMiddle, width))
+    def heightForWidth(self, width: int) -> int:
+        margins = self.layout().contentsMargins()
+        inner = max(40, width - margins.left() - margins.right() - 8)
+        return self._name_label.heightForWidth(inner) + margins.top() + margins.bottom() + 4
+
+    def sizeHint(self) -> QSize:
+        width = 280
+        viewport = self._list_viewport_width()
+        if viewport:
+            width = viewport
+        return QSize(width, max(36, self.heightForWidth(width)))
+
+    def _list_viewport_width(self) -> int:
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, QListWidget):
+                return max(0, parent.viewport().width())
+            parent = parent.parent()
+        return 0
 
 
 class _QueueList(QListWidget):
@@ -183,6 +206,31 @@ class _QueueList(QListWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setAcceptDrops(True)
+        self.setWordWrap(True)
+        self.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.setSpacing(0)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: D401 - Qt override
+        super().resizeEvent(event)
+        self.relayout_rows()
+
+    def _usable_row_width(self) -> int:
+        """Width the filename can occupy (overlay scrollbar + item chrome)."""
+        width = self.viewport().width()
+        gutter = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        return max(40, width - gutter)
+
+    def relayout_rows(self) -> None:
+        """Keep each row tall enough for a wrapped filename."""
+        width = self._usable_row_width()
+        for index in range(self.count()):
+            item = self.item(index)
+            widget = self.itemWidget(item)
+            if item is None or widget is None:
+                continue
+            item.setSizeHint(QSize(width, max(36, widget.heightForWidth(width))))
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if drop_has_accepted_files(event, IMAGE_EXTENSIONS, recurse_dirs=True):

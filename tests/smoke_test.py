@@ -15,7 +15,13 @@ from app.ml.cnn_model import BitumenRegressor
 from app.ml.dataset import RegressionDataset
 from app.ml.predictor import RegressionPredictor
 from app.ml.trainer import RegressionTrainer, RegressionTrainingResult
-from app.utils.model_io import list_saved_models, load_model, save_model
+from app.utils.model_io import (
+    format_r2_headline,
+    list_saved_models,
+    load_model,
+    resolve_model_r2,
+    save_model,
+)
 
 _DUMMY_OUTPUT_STATS = {
     "Water": {"mean": 8.0, "std": 1.5},
@@ -120,6 +126,22 @@ def test_backbone_freeze_helpers() -> None:
     assert all(parameter.requires_grad for parameter in model.head_parameters())
     model.unfreeze_backbone()
     assert all(parameter.requires_grad for parameter in model.backbone_parameters())
+
+
+def test_init_output_bias_predicts_train_means() -> None:
+    """Fresh heads should emit the label means before any training."""
+    model = BitumenRegressor(pretrained=False)
+    stats = {
+        "Water": {"mean": 70.0, "std": 5.0},
+        "Solids": {"mean": 18.0, "std": 3.0},
+        "Bitumen": {"mean": 12.0, "std": 4.0},
+    }
+    model.init_output_bias(stats)
+    model.eval()
+    with torch.no_grad():
+        output = model(torch.rand(4, 3, 256, 256))
+    expected = torch.tensor([70.0, 18.0, 12.0])
+    assert torch.allclose(output, expected.expand_as(output), atol=1e-4)
 
 
 def test_predictor_round_trip(tmp_path: Path) -> None:
@@ -307,13 +329,20 @@ def test_mixed_source_resolutions_standardize_to_model_size(tmp_path: Path) -> N
     eval_transform = build_eval_transforms(256)
     for size in sizes:
         prepared = prepare_image(Image.new("RGB", size, color=(10, 20, 30)), image_size=256)
-        assert max(prepared.size) <= 512
+        assert prepared.size == (256, 256)
         tensor = eval_transform(prepared)
         assert tuple(tensor.shape) == (3, 256, 256)
 
     huge = Image.new("RGB", (4000, 3000), color=(0, 0, 0))
     capped = cap_long_edge(huge, 512)
     assert capped.size == (512, 384)
+
+    from app.utils.image_utils import standardize_to_model_size
+
+    for size in sizes:
+        squared = standardize_to_model_size(Image.new("RGB", size, color=(1, 2, 3)), 256)
+        assert squared.size == (256, 256)
+        assert squared.mode == "RGB"
 
 
 def test_trainer_paper_recipe_runs(tmp_path: Path) -> None:
@@ -349,6 +378,7 @@ def test_trainer_paper_recipe_runs(tmp_path: Path) -> None:
         test_loader=test_loader,
         adaptation="scratch",
         bin_edges=train_ds.get_bin_edges(),
+        init_output_bias=True,
     )
 
     finished = []
@@ -398,6 +428,30 @@ def test_save_model_and_list_saved_models_round_trip(tmp_path: Path) -> None:
     assert metadata["architecture"] == "baseline"
     assert metadata["head"] == "native"
     assert metadata["image_size"] == 256
+    assert resolve_model_r2(metadata)["split"] == "test"
+    assert format_r2_headline(metadata) == "R² 0.55"
+
+
+def test_resolve_model_r2_prefers_test_then_history() -> None:
+    test_scores = {"Water": 0.48, "Solids": 0.52, "Bitumen": 0.66}
+    val_scores = {"Water": 0.50, "Solids": 0.55, "Bitumen": 0.70}
+    resolved = resolve_model_r2({"test_r2": test_scores, "best_val_r2": val_scores})
+    assert resolved["split"] == "test"
+    assert resolved["scores"]["Bitumen"] == 0.66
+    assert format_r2_headline({"test_r2": test_scores}) == "R² 0.55"
+
+    from_history = resolve_model_r2(
+        {
+            "training_history": [
+                {"water_r2": 0.10, "solids_r2": 0.10, "bitumen_r2": 0.10},
+                {"water_r2": 0.40, "solids_r2": 0.50, "bitumen_r2": 0.60},
+            ]
+        }
+    )
+    assert from_history["split"] == "val"
+    assert from_history["scores"]["Bitumen"] == 0.60
+    assert resolve_model_r2({"best_val_mae": {"Water": 1.0}}) == {}
+    assert format_r2_headline({}) == ""
 
 
 def test_parse_campaign_id_from_filename() -> None:

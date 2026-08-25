@@ -13,6 +13,12 @@ from app.constants import OUTPUT_NAMES
 if TYPE_CHECKING:
     from app.ml.predictor import RegressionPredictor
 
+_R2_HISTORY_KEYS = {
+    "Water": "water_r2",
+    "Solids": "solids_r2",
+    "Bitumen": "bitumen_r2",
+}
+
 
 def save_model(
     model: nn.Module,
@@ -133,3 +139,83 @@ def list_saved_models(save_dir: Union[str, Path]) -> List[Dict[str, Any]]:
 
     entries.sort(key=lambda entry: entry.get("created_at", ""), reverse=True)
     return entries
+
+
+def format_created_at(created_at: Optional[str], fmt: str = "%b %d, %Y") -> str:
+    """Format a model metadata ISO timestamp, or '' if missing/invalid."""
+    if not created_at:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(created_at)
+    except ValueError:
+        return ""
+    return parsed.strftime(fmt)
+
+
+def _complete_r2(scores: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(scores, dict):
+        return None
+    try:
+        return {name: float(scores[name]) for name in OUTPUT_NAMES}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def mean_r2(scores: Dict[str, float]) -> float:
+    """Mean of Water / Solids / Bitumen R² — same figure used to pick checkpoints."""
+    return sum(float(scores[name]) for name in OUTPUT_NAMES) / len(OUTPUT_NAMES)
+
+
+def _best_r2_from_history(history: List[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    best_scores: Optional[Dict[str, float]] = None
+    best_mean = float("-inf")
+    for entry in history or []:
+        try:
+            scores = {name: float(entry[key]) for name, key in _R2_HISTORY_KEYS.items()}
+        except (KeyError, TypeError, ValueError):
+            continue
+        current_mean = mean_r2(scores)
+        if current_mean > best_mean:
+            best_mean = current_mean
+            best_scores = scores
+    return best_scores
+
+
+def model_r2_splits(metadata: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    """Validation and test R² dicts when they were recorded.
+
+    ``val`` comes from ``best_val_r2``, or the best-mean epoch in
+    ``training_history`` for older files that only stored per-epoch R².
+    """
+    metadata = metadata or {}
+    splits: Dict[str, Dict[str, float]] = {}
+    test = _complete_r2(metadata.get("test_r2"))
+    if test:
+        splits["test"] = test
+    val = _complete_r2(metadata.get("best_val_r2")) or _best_r2_from_history(
+        metadata.get("training_history") or []
+    )
+    if val:
+        splits["val"] = val
+    return splits
+
+
+def resolve_model_r2(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Headline accuracy: test R² if saved, otherwise validation R².
+
+    Returns ``{"split": "test"|"val", "scores": {...}}`` or ``{}``.
+    """
+    splits = model_r2_splits(metadata)
+    if "test" in splits:
+        return {"split": "test", "scores": splits["test"]}
+    if "val" in splits:
+        return {"split": "val", "scores": splits["val"]}
+    return {}
+
+
+def format_r2_headline(metadata: Optional[Dict[str, Any]]) -> str:
+    """``R² 0.42`` from the headline split, or '' if none was recorded."""
+    resolved = resolve_model_r2(metadata)
+    if not resolved:
+        return ""
+    return f"R² {mean_r2(resolved['scores']):.2f}"

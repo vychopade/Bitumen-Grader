@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence, Union
 
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import QFileDialog, QWidget
 
 from app.utils.media import collect_images, is_image_path, is_label_path
+
+DropEvent = Union[QDragEnterEvent, QDropEvent]
 
 IMAGE_DIALOG_FILTER = (
     "Images (*.jpg *.jpeg *.png *.tif *.tiff *.JPG *.JPEG *.PNG *.TIF *.TIFF);;"
@@ -88,3 +91,31 @@ def unique_paths(existing: Iterable[str], incoming: Iterable[str]) -> List[str]:
         known.add(path)
         added.append(path)
     return added
+
+
+def dropped_local_paths(
+    event: DropEvent,
+    extensions: Sequence[str],
+    *,
+    recurse_dirs: bool = False,
+) -> List[str]:
+    """Local file paths from a drag/drop that match ``extensions``.
+
+    When ``recurse_dirs`` is True, dropped folders are walked for matching files.
+    """
+    mime = event.mimeData()
+    if mime is None or not mime.hasUrls():
+        return []
+    return collect_from_urls(mime.urls(), extensions=extensions, recurse_dirs=recurse_dirs)
+
+
+def drop_has_accepted_files(
+    event: DropEvent,
+    extensions: Sequence[str],
+    *,
+    recurse_dirs: bool = False,
+) -> bool:
+    mime = event.mimeData()
+    if mime is None or not mime.hasUrls():
+        return False
+    return urls_have_accepted_files(mime.urls(), extensions=extensions, recurse_dirs=recurse_dirs)

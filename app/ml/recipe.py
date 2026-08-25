@@ -6,8 +6,6 @@ schedules, penalties, and early-stop heuristics.
 """
 from __future__ import annotations
 
-from typing import Sequence
-
 # Table 2 — training configuration shared across all strategies.
 IMAGE_SIZE = 256
 BATCH_SIZE = 32
@@ -24,7 +22,6 @@ VAL_FRACTION = 0.16
 # image split when fewer than two campaigns are found.
 DEFAULT_SPLIT_MODE = "experiment"
 CLS_BINS = 3  # equal-frequency bins (classification endpoint in the paper)
-OUTPUT_ORDER: Sequence[str] = ("Water", "Solids", "Bitumen")
 
 
 def learning_rate_for_adaptation(adaptation: str) -> float:

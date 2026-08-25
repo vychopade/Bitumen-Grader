@@ -17,8 +17,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.components.drop_zone import drop_has_accepted_files, dropped_local_paths
 from app.constants import IMAGE_EXTENSIONS, LABEL_EXTENSIONS, OUTPUT_NAMES
+from app.ml.recipe import IMAGE_SIZE
 from app.theme import (
     ACCENT_COLOR,
     DANGER_COLOR,
@@ -30,7 +30,7 @@ from app.theme import (
     drop_zone_qss,
     ghost_button_qss,
 )
-from app.utils.files import pick_image_folder, pick_labels_file
+from app.utils.files import pick_image_folder, pick_labels_file, drop_has_accepted_files, dropped_local_paths
 
 MAX_UNMATCHED_PREVIEW = 200
 
@@ -392,6 +392,7 @@ class _DatasetSummaryCard(QFrame):
         split_mode: str = "random",
         split_campaigns: Optional[Dict[str, List[str]]] = None,
         split_fallback_reason: Optional[str] = None,
+        image_size: int = IMAGE_SIZE,
     ) -> None:
         train_pct = round((1 - val_fraction - test_fraction) * 100)
         val_pct = round(val_fraction * 100)
@@ -400,7 +401,8 @@ class _DatasetSummaryCard(QFrame):
             f"Matched: {total}\n"
             f"Train: {train_count} ({train_pct}%)\n"
             f"Validation: {val_count} ({val_pct}%)\n"
-            f"Test: {test_count} ({test_pct}%)"
+            f"Test: {test_count} ({test_pct}%)\n"
+            f"Photos resized to {image_size}\u00d7{image_size} before training"
         )
 
         lines = []

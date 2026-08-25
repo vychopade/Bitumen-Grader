@@ -7,14 +7,14 @@ into negative transfer on this domain.
 """
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Optional
 
 import torch
 import torch.nn as nn
 from torchvision import models
 
-# Shared across train / val / inference for new models (paper Table 2).
-IMAGE_SIZE = 256
+from app.ml.recipe import IMAGE_SIZE
+
 NUM_OUTPUTS = 3  # Water, Solids, Bitumen
 
 ARCHITECTURES = ("baseline", "resnet50", "vgg16", "resnet18")
@@ -192,6 +192,40 @@ class BitumenRegressor(nn.Module):
     def unfreeze_backbone(self) -> None:
         for parameter in self.backbone_parameters():
             parameter.requires_grad = True
+
+    def _output_linear(self) -> Optional[nn.Linear]:
+        """Last linear layer that emits [Water, Solids, Bitumen]."""
+        if self._legacy_combined:
+            layer = getattr(self.backbone, "fc", None)
+            return layer if isinstance(layer, nn.Linear) else None
+        module = self.head
+        if isinstance(module, nn.Linear):
+            return module
+        if isinstance(module, nn.Sequential):
+            for child in reversed(list(module.children())):
+                if isinstance(child, nn.Linear):
+                    return child
+        return None
+
+    def init_output_bias(self, output_stats: dict) -> None:
+        """Start raw-% training at the train-set means instead of at 0.
+
+        A fresh linear head outputs ~0. With Water around 70%, that is already
+        an MAE of 70% and R² in the −10s before any learning happens. Zeroing
+        the last-layer weights and setting the bias to the label means makes
+        epoch 1 equivalent to “predict the average.”
+        """
+        layer = self._output_linear()
+        if layer is None or layer.bias is None:
+            return
+        means = []
+        for name in ("Water", "Solids", "Bitumen"):
+            stats = output_stats.get(name) or {}
+            means.append(float(stats.get("mean", 0.0)))
+        bias = torch.tensor(means, dtype=layer.bias.dtype, device=layer.bias.device)
+        with torch.no_grad():
+            layer.weight.zero_()
+            layer.bias.copy_(bias)
 
     def config_dict(self) -> dict:
         return {

@@ -67,7 +67,7 @@ from app.theme import (
     link_button_qss,
     sum_deviation_color,
 )
-from app.utils.formatting import format_created_at
+from app.utils.model_io import format_created_at, format_r2_headline
 from app.utils.files import unique_paths
 from app.utils.image_utils import load_rgb_image
 from app.utils.media import is_image_path
@@ -203,7 +203,7 @@ class GradePage(QWidget):
             QListWidget {{
                 background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px;
             }}
-            QListWidget::item {{ border-bottom: 1px solid {BORDER_COLOR}; }}
+            QListWidget::item {{ padding: 0px; border-bottom: 1px solid {BORDER_COLOR}; }}
             QListWidget::item:last {{ border-bottom: none; }}
             QListWidget::item:selected {{ background-color: {SURFACE_HOVER_COLOR}; }}
             """
@@ -271,7 +271,7 @@ class GradePage(QWidget):
             f"QFrame#noModelBanner {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR};"
             f"border-radius: 3px; }}"
         )
-        banner.clicked.connect(self._navigate_to_model_library)
+        banner.clicked.connect(self._navigate_to_models)
 
         banner_layout = QVBoxLayout(banner)
         banner_layout.setContentsMargins(24, 20, 24, 20)
@@ -506,11 +506,17 @@ class GradePage(QWidget):
         metadata = active_model.get("metadata") or {}
         name = metadata.get("name") or Path(active_model.get("path", "")).stem
         date_str = format_created_at(metadata.get("created_at"))
-        self._model_value_label.setText(f"{name}  {date_str}".strip())
+        r2_str = format_r2_headline(metadata)
+        parts = [name]
+        if r2_str:
+            parts.append(r2_str)
+        if date_str:
+            parts.append(date_str)
+        self._model_value_label.setText("  ·  ".join(parts))
 
-    def _navigate_to_model_library(self) -> None:
+    def _navigate_to_models(self) -> None:
         if self.main_window is not None:
-            self.main_window.navigate_to("library")
+            self.main_window.navigate_to("models")
 
     # -- Queue management -----------------------------------------------------
 
@@ -532,6 +538,7 @@ class GradePage(QWidget):
 
         for path in added:
             self._add_queue_image(path)
+        self._queue_list.relayout_rows()
 
         self._error_label.setVisible(False)
         self._update_queue_status_label()
@@ -550,8 +557,6 @@ class GradePage(QWidget):
     def _add_queue_image(self, path: str) -> None:
         widget = _QueueItemWidget(Path(path).name)
         list_item = QListWidgetItem()
-        list_item.setSizeHint(widget.sizeHint())
-
         self._queue_list.addItem(list_item)
         self._queue_list.setItemWidget(list_item, widget)
 

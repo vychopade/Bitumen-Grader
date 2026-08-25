@@ -86,7 +86,7 @@ Steps:
    reason to try ImageNet transfer (mainly for Solids).
 5. Optional: check "Continue training a saved model" to keep training an
    existing checkpoint on this new dataset. That saves a new model and
-   leaves the original in the library.
+   leaves the original on the Models page.
 6. Start training. Watch loss and R² charts and the log. You can Stop
    anytime; the best validation R² checkpoint so far is kept.
 7. When it finishes, the model is saved and set as active. Go grade
@@ -143,7 +143,10 @@ Fixed behind the scenes (not shown in the UI):
     Falls back to a random 64/16/20 image split if only one campaign exists.
   Adam with a constant learning rate, no weight decay, no early stopping
   MSE on raw Water / Solids / Bitumen percentages (no z-score, no sum penalty)
-  Images resized to 256×256; only left-right and up-down flips
+  Images standardized to 256×256 before training (any source resolution);
+    only left-right and up-down flips after that
+  The head starts at the training-set mean composition so the first epoch
+    is “guess the average,” not “guess 0%”
   Best checkpoint selected by validation R² (the study's regression metric)
   3-bin equal-frequency accuracy is recorded as a diagnostic
   Transfer models start from ImageNet weights
@@ -153,9 +156,10 @@ Fixed behind the scenes (not shown in the UI):
 ---------
 
 Each trained model is saved under models/ as a .pt (weights) and a .json
-(stats and history). Cards show architecture, validation R², and test R²
-when available. Retrain continues that checkpoint on a new labelled dataset
-(Train page) and writes a new file.
+(stats and history). Cards show a headline R² (test if it was saved,
+otherwise validation) so you can compare accuracy at a glance. Retrain
+continues that checkpoint on a new labelled dataset (Train page) and
+writes a new file.
 
 Load sets it for grading. Delete removes that model for good.
 
@@ -185,7 +189,7 @@ training, or crop backgrounds. See the settings above.
     Check Python version, then: pip install -r requirements.txt
 
   Model won't load
-    File may be missing or moved. Retrain or load another from the library.
+    File may be missing or moved. Retrain or load another from the Models page.
 
   Training fails
     Check the progress log. If you run out of memory, close other apps.
@@ -193,6 +197,11 @@ training, or crop backgrounds. See the settings above.
   High MAE / weird grades
     Check CSV values, add more photos, raise epochs, improve framing.
     A negative R² on the test split is a warning the model did not learn.
+
+  R² around −10 or worse
+    The model did worse than guessing the average. Leave Epochs at 100
+    (the study default). Retrain with the current app; new runs start at
+    the training-set mean instead of predicting 0%.
 
   Photos or tables won't open
     Use JPG/PNG/TIF for photos and CSV/Excel/TXT for labels. Nested

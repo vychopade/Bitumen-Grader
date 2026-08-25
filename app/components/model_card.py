@@ -47,7 +47,7 @@ from app.theme import (
     ghost_button_qss,
     link_button_qss,
 )
-from app.utils.formatting import format_created_at
+from app.utils.model_io import format_created_at, mean_r2, model_r2_splits, resolve_model_r2
 
 
 class ModelCard(QFrame):
@@ -88,7 +88,7 @@ class ModelCard(QFrame):
 
         layout.addLayout(self._build_top_row())
         layout.addLayout(self._build_pills_row())
-        layout.addWidget(self._build_mae_summary_row())
+        layout.addWidget(self._build_accuracy_block())
         layout.addLayout(self._build_action_row())
 
         self._details_section = self._build_details_section()
@@ -148,39 +148,59 @@ class ModelCard(QFrame):
         row.addStretch(1)
         return row
 
-    def _build_mae_summary_row(self) -> QLabel:
-        val_r2 = self.metadata.get("best_val_r2") or {}
-        test_r2 = self.metadata.get("test_r2") or {}
-        best_val_mae = self.metadata.get("best_val_mae") or {}
-        if val_r2:
-            parts = [
-                f"Val R² Bitumen {val_r2.get('Bitumen', 0.0):.3f}",
-                f"Solids {val_r2.get('Solids', 0.0):.3f}",
-                f"Water {val_r2.get('Water', 0.0):.3f}",
-            ]
-            if test_r2:
-                parts.append(
-                    f"| Test R² Bitumen {test_r2.get('Bitumen', 0.0):.3f}  "
-                    f"Solids {test_r2.get('Solids', 0.0):.3f}  "
-                    f"Water {test_r2.get('Water', 0.0):.3f}"
-                )
-        else:
-            parts = [
-                f"Val Water \u00b1{best_val_mae.get('Water', 0.0):.2f}%",
-                f"Solids \u00b1{best_val_mae.get('Solids', 0.0):.2f}%",
-                f"Bitumen \u00b1{best_val_mae.get('Bitumen', 0.0):.2f}%",
-            ]
-            test_mae = self.metadata.get("test_mae") or None
-            if test_mae:
-                parts.append(
-                    f"| Test Water \u00b1{test_mae.get('Water', 0.0):.2f}%  "
-                    f"Solids \u00b1{test_mae.get('Solids', 0.0):.2f}%  "
-                    f"Bitumen \u00b1{test_mae.get('Bitumen', 0.0):.2f}%"
-                )
-        label = QLabel("   ".join(parts))
-        label.setWordWrap(True)
-        label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
-        return label
+    def _build_accuracy_block(self) -> QWidget:
+        """Headline R² (test, else validation) plus the three outputs."""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(2)
+
+        resolved = resolve_model_r2(self.metadata)
+        if resolved:
+            scores = resolved["scores"]
+            mean = mean_r2(scores)
+            split_label = "Test" if resolved["split"] == "test" else "Validation"
+            headline_color = DANGER_COLOR if mean < 0 else TEXT_PRIMARY
+
+            headline = QLabel(f"R²  {mean:.2f}")
+            headline.setStyleSheet(
+                f"color: {headline_color}; font-size: 20px; background: transparent;"
+            )
+            layout.addWidget(headline)
+
+            breakdown = QLabel(
+                f"{split_label}  ·  Bitumen {scores['Bitumen']:.2f}   "
+                f"Solids {scores['Solids']:.2f}   Water {scores['Water']:.2f}"
+            )
+            breakdown.setWordWrap(True)
+            breakdown.setStyleSheet(
+                f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;"
+            )
+            layout.addWidget(breakdown)
+            return container
+
+            missing = QLabel("R²  \u2014")
+            missing.setStyleSheet(
+                f"color: {TEXT_SECONDARY}; font-size: 20px; background: transparent;"
+            )
+            layout.addWidget(missing)
+            note = QLabel("Not recorded on this checkpoint")
+            note.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+            layout.addWidget(note)
+
+        mae = self.metadata.get("best_val_mae") or {}
+        if mae:
+            mae_label = QLabel(
+                f"Val MAE  Bitumen \u00b1{mae.get('Bitumen', 0.0):.2f}%   "
+                f"Solids \u00b1{mae.get('Solids', 0.0):.2f}%   "
+                f"Water \u00b1{mae.get('Water', 0.0):.2f}%"
+            )
+            mae_label.setWordWrap(True)
+            mae_label.setStyleSheet(
+                f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;"
+            )
+            layout.addWidget(mae_label)
+        return container
 
     def _build_action_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -303,14 +323,22 @@ class ModelCard(QFrame):
         return label
 
     def _build_r2_table(self) -> Optional[QTableWidget]:
-        val_r2 = self.metadata.get("best_val_r2") or {}
-        test_r2 = self.metadata.get("test_r2") or {}
+        splits = model_r2_splits(self.metadata)
+        val_r2 = splits.get("val")
+        test_r2 = splits.get("test")
         if not val_r2 and not test_r2:
             return None
 
-        has_test = bool(test_r2)
-        table = QTableWidget(len(OUTPUT_NAMES), 3 if has_test else 2)
-        headers = ["Output", "Val R²"] + (["Test R²"] if has_test else [])
+        headers = ["Output"]
+        columns: List[Dict[str, float]] = []
+        if val_r2:
+            headers.append("Val R²")
+            columns.append(val_r2)
+        if test_r2:
+            headers.append("Test R²")
+            columns.append(test_r2)
+
+        table = QTableWidget(len(OUTPUT_NAMES), len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -331,9 +359,7 @@ class ModelCard(QFrame):
             """
         )
         for row, label in enumerate(OUTPUT_NAMES):
-            values = [label, f"{val_r2.get(label, 0.0):.3f}"]
-            if has_test:
-                values.append(f"{test_r2.get(label, 0.0):.3f}")
+            values = [label] + [f"{column.get(label, 0.0):.2f}" for column in columns]
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)

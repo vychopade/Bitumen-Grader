@@ -34,9 +34,8 @@ class RegressionPredictor:
 
         image_size = image_size_from_metadata(self.metadata)
         self.image_size = image_size
-        self.transform = build_eval_transforms(
-            image_size, legacy_crop=is_legacy_resnet18(self.metadata)
-        )
+        self._legacy_crop = is_legacy_resnet18(self.metadata)
+        self.transform = build_eval_transforms(image_size, legacy_crop=self._legacy_crop)
 
     def _to_percentages(self, raw_outputs) -> list:
         """Map 3 raw outputs to [0, 100] percentages (undo z-score if needed)."""
@@ -51,7 +50,7 @@ class RegressionPredictor:
         return values
 
     def predict(self, pil_image) -> dict:
-        image = prepare_image(pil_image, self.image_size)
+        image = prepare_image(pil_image, self.image_size, square=not self._legacy_crop)
         tensor = self.transform(image)
         tensor = tensor.unsqueeze(0).to(self.device)
 

@@ -1,6 +1,6 @@
 # BitumenGrader
 
-Desktop app that trains a CNN to predict Water, Solids, and Bitumen % from froth photos. The default model is a compact CNN trained from scratch; ImageNet transfer (ResNet50 / VGG16) is optional. You can import/edit images, train or continue a saved model on a new dataset, grade new photos, and manage saved models.
+Desktop app that trains a CNN to predict Water, Solids, and Bitumen % from froth photos. The default model is a compact CNN trained from scratch; ImageNet transfer (ResNet50 / VGG16) is optional. Train or continue a saved model on a new dataset, grade new photos, and manage saved models.
 
 ## Install
 

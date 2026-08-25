@@ -8,10 +8,9 @@ from PIL import Image, ImageOps
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 
-from app.ml.cnn_model import IMAGE_SIZE as DEFAULT_IMAGE_SIZE
+from app.ml.recipe import IMAGE_SIZE
 
-# 256×256×3 for new models. Legacy ResNet-18 checkpoints used 224.
-IMAGE_SIZE = DEFAULT_IMAGE_SIZE
+# 256×256×3 for new models (paper Table 2). Legacy ResNet-18 checkpoints used 224.
 LEGACY_IMAGE_SIZE = 224
 _INTERPOLATION = InterpolationMode.BILINEAR
 
@@ -46,8 +45,9 @@ def load_rgb_image(source: Union[str, Path, Image.Image]) -> Image.Image:
 def cap_long_edge(image: Image.Image, max_edge: int) -> Image.Image:
     """Shrink huge camera files before the square resize (keeps aspect ratio).
 
-    Final ``image_size`` × ``image_size`` conversion still happens in the
-    transform pipeline. Skipping this step would decode 12MP photos every epoch.
+    Final ``image_size`` × ``image_size`` conversion still happens in
+    ``standardize_to_model_size``. Skipping this step would decode 12MP photos
+    every epoch.
     """
     width, height = image.size
     longest = max(width, height)
@@ -58,13 +58,38 @@ def cap_long_edge(image: Image.Image, max_edge: int) -> Image.Image:
     return image.resize(new_size, Image.Resampling.BILINEAR)
 
 
+def standardize_to_model_size(image: Image.Image, image_size: int = IMAGE_SIZE) -> Image.Image:
+    """RGB square of ``image_size``×``image_size`` (paper Table 2).
+
+    Phone, crop, and thumbnail photos all become the same canvas before
+    training or grading. Non-square sources are stretched to fit.
+    """
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    target = (int(image_size), int(image_size))
+    if image.size == target:
+        return image
+    return image.resize(target, Image.Resampling.BILINEAR)
+
+
 def prepare_image(
     source: Union[str, Path, Image.Image],
     image_size: int = IMAGE_SIZE,
+    *,
+    square: bool = True,
 ) -> Image.Image:
-    """RGB image ready for train/eval transforms: EXIF-corrected, long-edge capped."""
+    """RGB image ready for train/eval transforms: EXIF-corrected, size-capped.
+
+    When ``square`` is True (new models), the photo is also resized to
+    ``image_size``×``image_size`` here so every tensor starts from the same
+    geometry. Legacy ResNet-18 eval keeps ``square=False`` so CenterCrop(224)
+    can run on a 256 short-edge image.
+    """
     image = load_rgb_image(source)
-    return cap_long_edge(image, max(int(image_size) * 2, 512))
+    image = cap_long_edge(image, max(int(image_size) * 2, 512))
+    if square:
+        image = standardize_to_model_size(image, image_size)
+    return image
 
 
 def _square_resize(image_size: int) -> transforms.Resize:

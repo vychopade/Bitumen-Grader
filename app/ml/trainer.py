@@ -77,12 +77,7 @@ class RegressionTrainer(QObject):
         adaptation: str = "ft",
         bin_edges: Optional[dict] = None,
         parent=None,
-        # Accepted so older call sites / tests do not explode; ignored.
-        use_differential_lrs: bool = False,
-        backbone_lr_factor: float = 0.1,
-        use_cosine_schedule: bool = False,
-        freeze_backbone_epochs: int = 0,
-        sum_penalty_weight: float = 0.0,
+        init_output_bias: bool = False,
     ):
         super().__init__(parent)
 
@@ -102,14 +97,7 @@ class RegressionTrainer(QObject):
             learning_rate if learning_rate is not None else learning_rate_for_adaptation(self.adaptation)
         )
 
-        # Unused leftovers from the previous recipe; kept on the instance so
-        # any debug prints / UI that still read them do not fail.
-        self.use_differential_lrs = False
-        self.backbone_lr_factor = backbone_lr_factor
-        self.use_cosine_schedule = False
-        self.freeze_backbone_epochs = 0
-        self.sum_penalty_weight = 0.0
-
+        self.init_output_bias = bool(init_output_bias) and not self.normalise_targets
         self.stop_requested = False
 
     def request_stop(self) -> None:
@@ -214,6 +202,8 @@ class RegressionTrainer(QObject):
         try:
             self.model.to(self.device)
             self._apply_adaptation()
+            if self.init_output_bias:
+                self.model.init_output_bias(self.output_stats)
             optimizer = self._build_optimizer()
             loss_fn = nn.MSELoss()
 

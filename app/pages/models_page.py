@@ -1,5 +1,5 @@
 """
-Model Library page.
+Models page.
 
 Browse, load, and delete saved models from ``models/``. Each one shows as a
 ``ModelCard``; loading calls ``main_window.set_active_model(...)``.
@@ -97,7 +97,7 @@ class _CardsGrid(QWidget):
         self._layout.setRowStretch(num_rows, 1)
 
 
-class LibraryPage(QWidget):
+class ModelsPage(QWidget):
     """Browse, load, and delete saved models.
 
     Rescans ``models/`` whenever the page is shown.

@@ -11,7 +11,7 @@ from app.constants import IMAGE_EXTENSIONS
 from app.ml.recipe import CLS_BINS, TEST_FRACTION, VAL_FRACTION
 from app.utils.data_io import read_labels_file
 from app.utils.media import collect_images
-from app.utils.image_utils import IMAGE_SIZE, build_eval_transforms, build_train_transforms, prepare_image
+from app.utils.image_utils import IMAGE_SIZE, build_eval_transforms, build_train_transforms, prepare_image, standardize_to_model_size
 
 
 # Optional CSV columns used as an experiment/campaign id (Case 2 split).
@@ -357,10 +357,11 @@ class RegressionDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        image = prepare_image(item["image_path"], self.image_size)
+        image = prepare_image(item["image_path"], self.image_size, square=not self.legacy_crop)
+        if not self.legacy_crop and image.size != (self.image_size, self.image_size):
+            image = standardize_to_model_size(image, self.image_size)
         image_tensor = self.transforms(image)
-        # Transforms always emit a square; this is a last-resort guard if a
-        # custom pipeline is swapped in later.
+        # Last-resort guard if a custom transform pipeline is swapped in later.
         if image_tensor.shape[-2:] != (self.image_size, self.image_size):
             image_tensor = torch.nn.functional.interpolate(
                 image_tensor.unsqueeze(0),
