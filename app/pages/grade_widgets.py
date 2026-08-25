@@ -63,10 +63,11 @@ def _approx_output_range(mean: float, std: float) -> Tuple[float, float]:
 
 
 def _closest_pan_grade(bitumen_value: float, bitumen_mean: float, bitumen_std: float) -> int:
-    """Map predicted Bitumen into one of the four Pan grades.
+    """Map predicted Bitumen into one of the four batch numbers (Pan 3–6).
 
-    There's no saved Bitumen→Pan mapping, so we split the model's Bitumen
-    training range into four equal bins and pick which one the prediction lands in.
+    Labels store Pan as the batch id. There is no saved Bitumen→batch mapping,
+    so we split the model's Bitumen training range into four equal bins and
+    pick which batch the prediction lands in.
     """
     low, high = _approx_output_range(bitumen_mean, bitumen_std)
     span = high - low
@@ -86,6 +87,7 @@ class _GradingWorker(QObject):
 
     finished = pyqtSignal(list, int)  # [(image_id, result_or_None)], failure_count
     failed = pyqtSignal(str)
+    progress = pyqtSignal(int, int)  # done, total
 
     def __init__(self, predictor: RegressionPredictor, images: List[Any]):
         super().__init__()
@@ -97,16 +99,22 @@ class _GradingWorker(QObject):
             self.failed.emit("No model loaded.")
             return
 
-        results: List[Any] = []
+        try:
+            image_ids = [image_id for image_id, _source in self._images]
+            sources = [source for _image_id, source in self._images]
+            predictions = self._predictor.predict_many(sources, on_progress=self.progress.emit)
+        except Exception as exc:  # noqa: BLE001 - surface a single job error
+            self.failed.emit(str(exc) or "Grading failed.")
+            return
+
+        results = []
         failures = 0
-        for image_id, source in self._images:
-            try:
-                result = self._predictor.predict(source)
-            except Exception:  # noqa: BLE001 - keep grading remaining images
+        for image_id, prediction in zip(image_ids, predictions):
+            if prediction is None:
                 failures += 1
                 results.append((image_id, None))
-                continue
-            results.append((image_id, result))
+            else:
+                results.append((image_id, prediction))
 
         self.finished.emit(results, failures)
 
@@ -458,7 +466,7 @@ class _RangeBar(QWidget):
 
 
 class _PanGradeCard(QFrame):
-    """Closest Pan grade indicator; border colour follows the grade."""
+    """Closest-batch indicator; border colour follows the batch number."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -474,7 +482,7 @@ class _PanGradeCard(QFrame):
         self._title_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent;")
         layout.addWidget(self._title_label)
 
-        secondary_label = QLabel("Based on Bitumen vs. training averages.")
+        secondary_label = QLabel("Guessed from Bitumen vs. the training batches.")
         secondary_label.setWordWrap(True)
         secondary_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         layout.addWidget(secondary_label)
@@ -489,7 +497,7 @@ class _PanGradeCard(QFrame):
         )
 
     def set_grade(self, grade: int) -> None:
-        self._title_label.setText(f"Closest Pan grade: {grade}")
+        self._title_label.setText(f"Closest batch: {grade}")
         self._apply_frame_style(PAN_GRADE_COLORS.get(grade, TEXT_SECONDARY))
 
 

@@ -20,26 +20,44 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
-def load_rgb_image(source: Union[str, Path, Image.Image]) -> Image.Image:
-    """Load a photo as RGB, honouring EXIF orientation when present."""
+def _as_rgb_oriented(image: Image.Image) -> Image.Image:
+    try:
+        transposed = ImageOps.exif_transpose(image)
+    except (OSError, ValueError, SyntaxError):
+        transposed = None
+    if transposed is not None:
+        image = transposed
+    return image.convert("RGB")
+
+
+def load_rgb_image(
+    source: Union[str, Path, Image.Image],
+    *,
+    max_decode_edge: Optional[int] = None,
+) -> Image.Image:
+    """Load a photo as RGB, honouring EXIF orientation when present.
+
+    ``max_decode_edge`` asks JPEG (and similar) decoders for a smaller bitmap
+    so 12MP camera files are not fully expanded just to grade at 256×256.
+    Preview callers omit it and get the original pixels.
+    """
     if isinstance(source, Image.Image):
-        image = source
-        try:
-            transposed = ImageOps.exif_transpose(image)
-        except (OSError, ValueError, SyntaxError):
-            transposed = None
-        if transposed is not None:
-            image = transposed
-        return image.convert("RGB")
+        image = _as_rgb_oriented(source)
+        if max_decode_edge:
+            image = cap_long_edge(image, max_decode_edge)
+        return image
 
     with Image.open(source) as opened:
+        if max_decode_edge and max_decode_edge > 0:
+            try:
+                opened.draft("RGB", (int(max_decode_edge), int(max_decode_edge)))
+            except (OSError, ValueError, SyntaxError):
+                pass
         opened.load()
-        try:
-            transposed = ImageOps.exif_transpose(opened)
-        except (OSError, ValueError, SyntaxError):
-            transposed = None
-        image = transposed if transposed is not None else opened
-        return image.convert("RGB")
+        image = _as_rgb_oriented(opened)
+        if max_decode_edge:
+            image = cap_long_edge(image, max_decode_edge)
+        return image
 
 
 def cap_long_edge(image: Image.Image, max_edge: int) -> Image.Image:
@@ -85,8 +103,8 @@ def prepare_image(
     geometry. Legacy ResNet-18 eval keeps ``square=False`` so CenterCrop(224)
     can run on a 256 short-edge image.
     """
-    image = load_rgb_image(source)
-    image = cap_long_edge(image, max(int(image_size) * 2, 512))
+    max_edge = max(int(image_size) * 2, 512)
+    image = load_rgb_image(source, max_decode_edge=max_edge)
     if square:
         image = standardize_to_model_size(image, image_size)
     return image

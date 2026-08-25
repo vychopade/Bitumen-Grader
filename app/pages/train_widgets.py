@@ -297,7 +297,7 @@ class _MatchSummaryCard(QFrame):
         if invalid_rows:
             word = "row" if self._invalid_count == 1 else "rows"
             self._invalid_summary_label.setText(
-                f"{self._invalid_count} {word} skipped \u2014 couldn't read Water/Solids/Bitumen/Pan."
+                f"{self._invalid_count} {word} skipped \u2014 couldn't read Water/Solids/Bitumen/Pan (batch)."
             )
             self._invalid_summary_label.setVisible(True)
 
@@ -356,7 +356,7 @@ class _DatasetSummaryCard(QFrame):
         self._ranges_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
         layout.addWidget(self._ranges_label)
 
-        pan_title = QLabel("Pan grades:")
+        pan_title = QLabel("Batches:")
         pan_title.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; background: transparent;"
         )
@@ -427,7 +427,7 @@ class _DatasetSummaryCard(QFrame):
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(8)
 
-            label = QLabel(f"Grade {grade}: {count}")
+            label = QLabel(f"Batch {grade}: {count}")
             label.setMinimumWidth(96)
             label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
             row_layout.addWidget(label)

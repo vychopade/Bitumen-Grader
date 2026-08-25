@@ -2,7 +2,7 @@
 Grade Images page.
 
 Run the active model on sample photos and show Water / Solids / Bitumen
-predictions, a sum-to-~100% check, and a rough closest Pan grade.
+predictions, a sum-to-~100% check, and a rough closest-batch (Pan) guess.
 """
 from __future__ import annotations
 
@@ -466,7 +466,7 @@ class GradePage(QWidget):
 
     def _build_batch_table(self) -> QTableWidget:
         table = QTableWidget(0, 8)
-        table.setHorizontalHeaderLabels(["#", "Filename", "Water", "Solids", "Bitumen", "Sum", "Sum OK", "Pan Grade"])
+        table.setHorizontalHeaderLabels(["#", "Filename", "Water", "Solids", "Bitumen", "Sum", "Sum OK", "Batch"])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -646,6 +646,7 @@ class GradePage(QWidget):
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self._on_grading_progress)
         self._worker.finished.connect(self._on_grading_finished)
         self._worker.failed.connect(self._on_grading_failed)
         self._worker.finished.connect(self._thread.quit)
@@ -653,6 +654,11 @@ class GradePage(QWidget):
         self._thread.finished.connect(self._on_grading_thread_finished)
 
         self._thread.start()
+
+    def _on_grading_progress(self, done: int, total: int) -> None:
+        if total <= 1:
+            return
+        self._loading_overlay.set_message(f"Grading {done} of {total}\u2026")
 
     def _set_grading_active(self, active: bool) -> None:
         """Disable controls while grading is running."""
@@ -916,7 +922,7 @@ class GradePage(QWidget):
         if not save_path:
             return
 
-        header = ["filename", "water", "solids", "bitumen", "sum", "sum_deviation", "sum_ok", "pan_grade"]
+        header = ["filename", "water", "solids", "bitumen", "sum", "sum_deviation", "sum_ok", "batch"]
         rows: List[List[str]] = []
         for queue_image in graded:
             result = queue_image.result

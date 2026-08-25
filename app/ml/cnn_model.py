@@ -17,6 +17,21 @@ from app.ml.recipe import IMAGE_SIZE
 
 NUM_OUTPUTS = 3  # Water, Solids, Bitumen
 
+
+def select_torch_device() -> torch.device:
+    """Prefer CUDA, then Apple Metal, else CPU."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    backends_mps = getattr(torch.backends, "mps", None)
+    is_available = getattr(backends_mps, "is_available", None) if backends_mps is not None else None
+    try:
+        if callable(is_available) and is_available():
+            return torch.device("mps")
+    except (RuntimeError, AttributeError):
+        pass
+    return torch.device("cpu")
+
+
 ARCHITECTURES = ("baseline", "resnet50", "vgg16", "resnet18")
 TRAINABLE_ARCHITECTURES = ("baseline", "resnet50", "vgg16")
 HEAD_TYPES = ("native", "c2")
@@ -243,7 +258,7 @@ class BitumenRegressor(nn.Module):
         are treated as ResNet-18 with a native head.
         """
         if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            device = select_torch_device()
         metadata = metadata or {}
         state_dict = torch.load(path, map_location=device)
         architecture = metadata.get("architecture") or infer_architecture(state_dict)

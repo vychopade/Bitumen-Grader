@@ -13,7 +13,8 @@ model to grade new photos. It won't replace a full lab test, but it's a
 fast way to get a repeatable estimate from a picture.
 
 Predictions also show a sum check (Water + Solids + Bitumen should be
-near 100%) and a rough Pan grade based on the Bitumen value.
+near 100%) and a rough closest-batch guess from the Bitumen value.
+The labels column is still named Pan; that is the batch number.
 
 
 2. INSTALL AND RUN
@@ -60,7 +61,7 @@ When you run from source, models stay in the project's models/ folder.
    - Water / Solids / Bitumen percentages
    - Sum row: green if close to 100%, amber if a bit off, red if more
      than about 5% off
-   - Closest Pan grade (rough, from Bitumen %)
+   - Closest batch (rough, from Bitumen %; Pan in the labels file)
 6. Export CSV if you want a spreadsheet of the batch.
 7. Clear results (or Clear queue) when you're done with that batch.
 
@@ -70,10 +71,11 @@ When you run from source, models stay in the project's models/ folder.
 
 You need:
   - A CSV/Excel file with columns: Image, Pan, Water, Solids, Bitumen
-    (Image = filename; extension optional). An optional Campaign / Experiment /
-    Run column is used to hold whole flotation campaigns out of training.
+    (Image = filename; extension optional; Pan = batch number). An optional
+    Campaign / Experiment / Run column is used to hold whole flotation
+    campaigns out of training.
   - A folder of those photos
-  - Ideally 50+ images per Pan grade (200+ is better). Mix lighting and
+  - Ideally 50+ images per batch (200+ is better). Mix lighting and
     framing a bit so the model isn't too picky later.
 
 Steps:
@@ -81,7 +83,7 @@ Steps:
 2. Drop or choose the photo folder. Nested folders are included. Check the
    match summary; fix unmatched names if the match rate is low.
 3. Review the dataset summary (train / validation / test counts, ranges,
-   Pan distribution, and which campaigns landed in each split).
+   batch counts, and which campaigns landed in each split).
 4. Name the model. Leave Architecture on Baseline CNN unless you have a
    reason to try ImageNet transfer (mainly for Solids).
 5. Optional: check "Continue training a saved model" to keep training an

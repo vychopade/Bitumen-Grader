@@ -59,6 +59,11 @@ class LoadingOverlay(QWidget):
         self.show()
         self._timer.start()
 
+    def set_message(self, message: str) -> None:
+        """Update the status text without restarting the spinner."""
+        self._message = message
+        self.update()
+
     def hide_overlay(self) -> None:
         """Hide and stop the spinner."""
         self._timer.stop()

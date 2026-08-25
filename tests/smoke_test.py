@@ -201,6 +201,71 @@ def test_predictor_skips_denorm_when_targets_not_normalised(tmp_path: Path) -> N
     assert prediction["Bitumen"]["value"] == 70.0
 
 
+def test_predict_many_batches_and_skips_bad_files(tmp_path: Path) -> None:
+    """Grade All should batch inference and keep going if one file is unreadable."""
+    model = BitumenRegressor(pretrained=False)
+    result = _make_dummy_result(normalise_targets=False)
+    paths = save_model(
+        model=model,
+        name="batch_model",
+        output_stats=result.output_stats,
+        result=result,
+        save_dir=tmp_path,
+    )
+    predictor = RegressionPredictor(
+        paths["model_path"],
+        {"output_stats": result.output_stats, "normalise_targets": False},
+    )
+
+    class _FixedModel:
+        def eval(self):
+            return self
+
+        def __call__(self, tensor):
+            count = tensor.shape[0]
+            return torch.tensor([[10.0, 20.0, 70.0]]).expand(count, 3).clone()
+
+    predictor.model = _FixedModel()
+    images = [Image.new("RGB", (256, 256), color=(index, index, index)) for index in range(5)]
+    progress = []
+    graded = predictor.predict_many(
+        images + [tmp_path / "missing.jpg"],
+        batch_size=2,
+        on_progress=lambda done, total: progress.append((done, total)),
+    )
+
+    assert len(graded) == 6
+    assert all(item is not None and item["Bitumen"]["value"] == 70.0 for item in graded[:5])
+    assert graded[5] is None
+    assert progress[0] == (0, 6)
+    assert progress[-1] == (6, 6)
+
+
+def test_jpeg_draft_decode_stays_small(tmp_path: Path) -> None:
+    """Model prep should not keep a full 12MP bitmap in memory."""
+    from app.utils.image_utils import load_rgb_image, prepare_image
+
+    path = tmp_path / "camera.jpg"
+    Image.new("RGB", (4000, 3000), color=(40, 80, 120)).save(path, quality=90)
+
+    full = load_rgb_image(path)
+    assert full.size == (4000, 3000)
+
+    drafted = load_rgb_image(path, max_decode_edge=512)
+    assert max(drafted.size) <= 512
+
+    prepared = prepare_image(path, image_size=256)
+    assert prepared.size == (256, 256)
+
+
+def test_select_torch_device_is_usable() -> None:
+    from app.ml.cnn_model import select_torch_device
+
+    device = select_torch_device()
+    assert device.type in {"cpu", "cuda", "mps"}
+    torch.zeros(1, device=device)
+
+
 def test_save_model_persists_normalise_targets_flag(tmp_path: Path) -> None:
     """Metadata JSON should store normalise_targets."""
     model = BitumenRegressor(pretrained=False)

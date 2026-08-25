@@ -137,7 +137,6 @@ class TrainPage(QWidget):
         self._architecture_combo: Optional[QComboBox] = None
         self._adaptation_combo: Optional[QComboBox] = None
         self._head_combo: Optional[QComboBox] = None
-        self._strategy_note: Optional[QLabel] = None
         self._adaptation_label: Optional[QLabel] = None
         self._head_label: Optional[QLabel] = None
         self._epochs_spin: Optional[QSpinBox] = None
@@ -298,7 +297,7 @@ class TrainPage(QWidget):
         mapping_form.setSpacing(6)
         self._add_mapping_row(mapping_form, "Filename column:", "Image")
         self._add_mapping_row(mapping_form, "Outputs to predict:", ", ".join(OUTPUT_NAMES))
-        self._add_mapping_row(mapping_form, "Display only:", "Pan")
+        self._add_mapping_row(mapping_form, "Display only:", "Pan (batch)")
         self._column_mapping_frame.setVisible(False)
         layout.addWidget(self._column_mapping_frame)
 
@@ -524,14 +523,6 @@ class TrainPage(QWidget):
 
         layout.addLayout(form)
 
-        self._strategy_note = QLabel("")
-        self._strategy_note.setWordWrap(True)
-        self._strategy_note.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 11px; background-color: {BACKGROUND_COLOR};"
-            f"border-radius: 3px; padding: 8px;"
-        )
-        layout.addWidget(self._strategy_note)
-
         section.setStyleSheet(
             f"""
             QFrame {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}
@@ -717,7 +708,6 @@ class TrainPage(QWidget):
         self._on_continue_model_changed()
 
     def _on_strategy_changed(self, _index: int = 0) -> None:
-        is_baseline = self._current_architecture() == "baseline"
         is_transfer = self._is_transfer_architecture()
         continuing = bool(self._continue_checkbox is not None and self._continue_checkbox.isChecked())
         show_transfer_controls = is_transfer or (continuing and self._is_transfer_architecture())
@@ -731,29 +721,6 @@ class TrainPage(QWidget):
             self._head_combo.setEnabled(show_transfer_controls and not continuing)
             if self._head_label is not None:
                 self._head_label.setVisible(show_transfer_controls)
-
-        if self._strategy_note is not None:
-            if continuing:
-                parent = (self._parent_model_meta or {}).get("name") or "the selected model"
-                self._strategy_note.setText(
-                    f"Continuing \u201c{parent}\u201d on the dataset below. Architecture and head "
-                    "stay locked so weights load correctly. A new model file is saved; the original is kept."
-                )
-            elif is_baseline:
-                self._strategy_note.setText(
-                    "Baseline CNN trained from scratch is the most robust default for froth images. "
-                    "Defaults follow the study recipe (Adam, MSE, batch 32, 100 epochs, LR 0.0001). "
-                    "Epochs, batch size, and learning rate can be changed below; the best validation "
-                    "R² checkpoint is still kept. Whole flotation campaigns are held out of training "
-                    "when two or more are found."
-                )
-            else:
-                self._strategy_note.setText(
-                    "ImageNet transfer is optional and mainly helps Solids. Fine-tuning (LR 0.0001) beat "
-                    "frozen features (LR 0.001) in the study; Adaptation sets that learning rate unless "
-                    "you override it. The 2-layer (C2) head is the custom head that helped Solids. "
-                    "Compare against the baseline before deploying."
-                )
 
     # -- CSV / folder / dataset summary --------------------------------------
 
