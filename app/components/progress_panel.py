@@ -16,7 +16,6 @@ matplotlib.use("QtAgg")
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
-from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QFrame,
     QHBoxLayout,
@@ -67,9 +66,6 @@ class ProgressPanel(QWidget):
 
         self._train_losses: List[float] = []
         self._val_losses: List[float] = []
-        self._water_maes: List[float] = []
-        self._solids_maes: List[float] = []
-        self._bitumen_maes: List[float] = []
         self._water_r2s: List[float] = []
         self._solids_r2s: List[float] = []
         self._bitumen_r2s: List[float] = []
@@ -298,9 +294,6 @@ class ProgressPanel(QWidget):
 
         self._train_losses = []
         self._val_losses = []
-        self._water_maes = []
-        self._solids_maes = []
-        self._bitumen_maes = []
         self._water_r2s = []
         self._solids_r2s = []
         self._bitumen_r2s = []
@@ -378,9 +371,6 @@ class ProgressPanel(QWidget):
 
         self._train_losses.append(train_loss)
         self._val_losses.append(val_loss)
-        self._water_maes.append(water)
-        self._solids_maes.append(solids)
-        self._bitumen_maes.append(bitumen)
         self._water_r2s.append(water_r2)
         self._solids_r2s.append(solids_r2)
         self._bitumen_r2s.append(bitumen_r2)

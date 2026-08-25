@@ -81,9 +81,9 @@ LEFT_PANEL_WIDTH = 340
 class GradePage(QWidget):
     """Grade sample images with the active model.
 
-    Images arrive from Import's "Send to Grading", via Add Images, or by
-    drop. Grade one selected image or the whole queue; results show as a
-    single-image view or a batch table you can export to CSV.
+    Drop photos or folders onto the queue, or choose files/folder. Grade one
+    selected image or the whole queue; results show as a single-image view or
+    a table you can export to CSV.
     """
 
     def __init__(self, main_window: Optional["MainWindow"] = None, parent: Optional[QWidget] = None):
@@ -105,13 +105,11 @@ class GradePage(QWidget):
         self._export_worker: Optional[_ExportWorker] = None
 
         self._model_value_label: Optional[QLabel] = None
-        self._change_model_button: Optional[QPushButton] = None
         self._error_label: Optional[QLabel] = None
 
         self._drop_zone: Optional[_ImageDropZone] = None
         self._queue_list: Optional[_QueueList] = None
         self._queue_status_label: Optional[QLabel] = None
-        self._add_images_button: Optional[QPushButton] = None
         self._grade_all_button: Optional[QPushButton] = None
         self._clear_all_button: Optional[QPushButton] = None
 
@@ -545,14 +543,6 @@ class GradePage(QWidget):
         self._update_action_buttons_enabled()
         if self._selected_id is None and self._queue:
             self._queue_list.setCurrentItem(self._queue[0].item)
-
-    def _show_image_load_error(self, failed_names: List[str]) -> None:
-        names = ", ".join(failed_names[:3])
-        if len(failed_names) > 3:
-            names += f", and {len(failed_names) - 3} more"
-        count_word = "image" if len(failed_names) == 1 else "images"
-        self._error_label.setText(f"Couldn't load {len(failed_names)} {count_word}: {names}")
-        self._error_label.setVisible(True)
 
     def _add_queue_image(self, path: str) -> None:
         widget = _QueueItemWidget(Path(path).name)

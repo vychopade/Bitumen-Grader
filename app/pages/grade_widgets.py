@@ -47,7 +47,6 @@ def pil_to_qpixmap(image: Image.Image) -> QPixmap:
     qimage = QImage(data, rgba.width, rgba.height, QImage.Format.Format_RGBA8888)
     return QPixmap.fromImage(qimage.copy())
 
-THUMB_SIZE = 64
 PAN_GRADES = (3, 4, 5, 6)
 PAN_GRADE_COLORS = {3: WATER_LINE_COLOR, 4: SUCCESS_COLOR, 5: ACCENT_COLOR, 6: DANGER_COLOR}
 PAN_GRADE_TEXT_COLORS = {3: "#FFFFFF", 4: "#FFFFFF", 5: TEXT_INVERSE, 6: "#FFFFFF"}
@@ -167,7 +166,6 @@ class _QueueItemWidget(QWidget):
 
     def __init__(self, filename: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._filename = filename
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 16, 8)

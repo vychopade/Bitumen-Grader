@@ -31,8 +31,6 @@ class RegressionPredictor:
     VGG16 / legacy ResNet-18 checkpoints all load correctly.
     """
 
-    OUTPUT_NAMES = list(OUTPUT_NAMES)
-
     def __init__(self, model_path, metadata):
         device = select_torch_device()
         self.device = device
@@ -41,7 +39,7 @@ class RegressionPredictor:
 
         self.output_stats = metadata["output_stats"]
         self.normalise_targets = bool(metadata.get("normalise_targets", True))
-        self.output_names = list(self.OUTPUT_NAMES)
+        self.output_names = list(OUTPUT_NAMES)
         self.model.eval()
 
         image_size = image_size_from_metadata(self.metadata)

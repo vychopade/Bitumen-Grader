@@ -31,9 +31,7 @@ DANGER_DISABLED_FG = "#6B5050"
 DANGER_DISABLED_BORDER = "#4A3838"
 
 SUCCESS_COLOR = "#4A9A6A"
-SUCCESS_HOVER_COLOR = "#5BB07C"
 SUCCESS_BG = "#1E2A22"
-WARNING_COLOR = "#C9A227"
 WARNING_BG = "#2A2618"
 
 # Chart series
@@ -42,27 +40,17 @@ SOLIDS_LINE_COLOR = "#4A9A6A"
 BITUMEN_LINE_COLOR = "#C9A227"
 VAL_LINE_COLOR = "#6A8FB0"
 
-PILL_BACKGROUND = "#2C2F35"
-REGRESSION_PILL_COLOR = "#3D5A78"
-
-BUTTON_COLOR = SURFACE_HOVER_COLOR
-BUTTON_HOVER_COLOR = BORDER_COLOR
-
 RADIUS_SM = 3
-RADIUS_MD = 4
 
 PAGE_MARGINS = (22, 18, 22, 16)
 PAGE_SPACING = 12
 
-ACCENT_TINT_HOVER = "rgba(201, 162, 39, 28)"
 
-
-def accent_button_qss(*, extra: str = "") -> str:
-    extra_rule = f" {extra}" if extra else ""
+def accent_button_qss() -> str:
     return (
         f"QPushButton {{ background-color: {ACCENT_COLOR}; color: {TEXT_INVERSE};"
         f"border: 1px solid {ACCENT_COLOR}; border-radius: {RADIUS_SM}px;"
-        f"padding: 6px 12px; min-height: 24px;{extra_rule} }}"
+        f"padding: 6px 12px; min-height: 24px; }}"
         f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
         f"QPushButton:pressed {{ background-color: {ACCENT_PRESSED_COLOR}; }}"
         f"QPushButton:disabled {{ background-color: {ACCENT_DISABLED_BG}; color: {ACCENT_DISABLED_FG};"
@@ -71,12 +59,11 @@ def accent_button_qss(*, extra: str = "") -> str:
     )
 
 
-def ghost_button_qss(*, extra: str = "") -> str:
-    extra_rule = f" {extra}" if extra else ""
+def ghost_button_qss() -> str:
     return (
         f"QPushButton {{ background-color: transparent; color: {TEXT_PRIMARY};"
         f"border: 1px solid {BORDER_COLOR}; border-radius: {RADIUS_SM}px;"
-        f"padding: 6px 12px; min-height: 24px;{extra_rule} }}"
+        f"padding: 6px 12px; min-height: 24px; }}"
         f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
         f"QPushButton:pressed {{ background-color: {NAV_HOVER_COLOR}; }}"
         f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid {SEPARATOR_COLOR}; }}"

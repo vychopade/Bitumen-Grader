@@ -15,7 +15,6 @@ matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from PyQt6.QtCore import Qt, pyqtSignal  # noqa: E402
-from PyQt6.QtGui import QColor  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QAbstractItemView,
     QFrame,
@@ -178,15 +177,6 @@ class ModelCard(QFrame):
             )
             layout.addWidget(breakdown)
             return container
-
-            missing = QLabel("R²  \u2014")
-            missing.setStyleSheet(
-                f"color: {TEXT_SECONDARY}; font-size: 20px; background: transparent;"
-            )
-            layout.addWidget(missing)
-            note = QLabel("Not recorded on this checkpoint")
-            note.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
-            layout.addWidget(note)
 
         mae = self.metadata.get("best_val_mae") or {}
         if mae:

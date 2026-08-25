@@ -114,7 +114,6 @@ class ModelsPage(QWidget):
         self._no_match_label: Optional[QLabel] = None
         self._scroll: Optional[QScrollArea] = None
         self._cards_grid: Optional[_CardsGrid] = None
-        self._train_link_button: Optional[QPushButton] = None
 
         self._build_ui()
 
@@ -202,7 +201,6 @@ class ModelsPage(QWidget):
         train_link.setStyleSheet(link_button_qss())
         train_link.clicked.connect(self._navigate_to_train_page)
         layout.addWidget(train_link, 0, Qt.AlignmentFlag.AlignHCenter)
-        self._train_link_button = train_link
 
         return container
 

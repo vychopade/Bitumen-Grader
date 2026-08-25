@@ -101,29 +101,6 @@ QPushButton:focus {
     outline: none;
 }
 
-QPushButton[accent="true"] {
-    background-color: #C9A227;
-    color: #1C1E22;
-    border: 1px solid #C9A227;
-}
-QPushButton[accent="true"]:hover {
-    background-color: #B08E1F;
-}
-QPushButton[accent="true"]:pressed {
-    background-color: #9A7B1A;
-}
-QPushButton[accent="true"]:disabled {
-    background-color: #3F3A2C;
-    color: #8A8068;
-    border: 1px solid #3F3A2C;
-}
-
-QFrame[card="true"] {
-    background-color: #24262B;
-    border: 1px solid #3A3D44;
-    border-radius: 3px;
-}
-
 /* -- QLineEdit ------------------------------------------------------------ */
 
 QLineEdit {
@@ -219,34 +196,6 @@ QComboBox QAbstractItemView {
 QComboBox QAbstractItemView::item {
     min-height: 22px;
     padding: 4px 8px;
-}
-
-/* -- QSlider ------------------------------------------------------------------ */
-
-QSlider::groove:horizontal {
-    background: #1C1E22;
-    height: 4px;
-    border-radius: 1px;
-}
-QSlider::sub-page:horizontal {
-    background: #C9A227;
-    border-radius: 1px;
-}
-QSlider::add-page:horizontal {
-    background: #1C1E22;
-    border-radius: 1px;
-}
-QSlider::handle:horizontal {
-    background: #C9A227;
-    width: 12px;
-    margin: -4px 0;
-    border-radius: 2px;
-}
-QSlider::handle:horizontal:hover {
-    background: #B08E1F;
-}
-QSlider:disabled QSlider::handle:horizontal {
-    background: #5C5C5C;
 }
 
 /* -- QCheckBox ------------------------------------------------------------------ */
@@ -431,9 +380,9 @@ QScrollArea {
     border: none;
 }
 
-/* -- QTextEdit / QPlainTextEdit ------------------------------------------------------------ */
+/* -- QTextEdit ------------------------------------------------------------------------- */
 
-QTextEdit, QPlainTextEdit {
+QTextEdit {
     background-color: #24262B;
     color: #E4E4E4;
     border: 1px solid #3A3D44;

@@ -56,13 +56,11 @@ from app.ml.trainer import RegressionTrainer, RegressionTrainingResult
 from app.pages.train_widgets import _CsvDropZone, _DatasetSummaryCard, _FolderDropZone, _MatchSummaryCard
 from app.paths import MODELS_DIR
 from app.theme import (
-    ACCENT_COLOR,
     BACKGROUND_COLOR,
     BORDER_COLOR,
     DANGER_COLOR,
     PAGE_MARGINS,
     PAGE_SPACING,
-    SUCCESS_COLOR,
     SURFACE_COLOR,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
@@ -79,7 +77,6 @@ from app.utils.model_io import list_saved_models, load_model_metadata, save_mode
 if TYPE_CHECKING:
     from app.main_window import MainWindow
 
-# Edited imports land here; prefer the original photo folder when sending to Train.
 LEFT_PANEL_WIDTH = 500
 VAL_SPLIT_REBUILD_DEBOUNCE_MS = 300
 
