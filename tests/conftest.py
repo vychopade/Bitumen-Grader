@@ -1,3 +1,4 @@
+# Pytest setup: put the project root on sys.path so test imports resolve.
 """Add project root to sys.path so ``app`` imports work."""
 
 from __future__ import annotations

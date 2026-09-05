@@ -1,3 +1,4 @@
+# Tests the CNN, dataset splits, training loop, and grading/save-load pipeline.
 """Quick offline checks for the ML backend (no PyQt).
 
 python -m pytest tests/smoke_test.py -v
