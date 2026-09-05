@@ -1,6 +1,7 @@
-# Python
+# Python bytecode and virtualenvs
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
@@ -9,13 +10,25 @@ __pycache__/
 venv/
 env/
 
-# Packaging
+# Secrets (this app has none; keep the pattern anyway)
+.env
+.env.*
+*.pem
+
+# Packaging / build output
 build/
 dist/
+*.spec.bak
 
-# OS / editor
+# Node (not used here; exclude if added later)
+node_modules/
+
+# OS / editor junk
 .DS_Store
 Thumbs.db
+*.swp
+*~
 
-# Runtime
-**/bitumengrader_edited_images/
+# Trained checkpoints — regenerate on the Train page
+models/*.pt
+models/*.json

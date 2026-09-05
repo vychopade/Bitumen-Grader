@@ -4,6 +4,7 @@ Models page.
 Browse, load, and delete saved models from ``models/``. Each one shows as a
 ``ModelCard``; loading calls ``main_window.set_active_model(...)``.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -76,7 +77,10 @@ class _CardsGrid(QWidget):
         width = self.width()
         if width <= 0:
             return MIN_COLUMNS
-        return max(MIN_COLUMNS, (width + CARD_SPACING) // (CARD_MIN_WIDTH + CARD_SPACING))
+        return max(
+            MIN_COLUMNS,
+            (width + CARD_SPACING) // (CARD_MIN_WIDTH + CARD_SPACING),
+        )
 
     def _apply_layout(self, columns: int) -> None:
         self._columns = columns
@@ -92,8 +96,11 @@ class _CardsGrid(QWidget):
         for col in range(columns):
             self._layout.setColumnStretch(col, 1)
 
-        # Extra stretch row so leftover height sits below the cards, not inside them.
-        num_rows = (len(self._cards) + columns - 1) // columns if self._cards else 0
+        # Extra stretch row so leftover height sits below the cards, not inside
+        # them.
+        num_rows = (
+            (len(self._cards) + columns - 1) // columns if self._cards else 0
+        )
         self._layout.setRowStretch(num_rows, 1)
 
 
@@ -103,7 +110,11 @@ class ModelsPage(QWidget):
     Rescans ``models/`` whenever the page is shown.
     """
 
-    def __init__(self, main_window: Optional["MainWindow"] = None, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        main_window: Optional["MainWindow"] = None,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self.main_window = main_window
         self._cards: List[ModelCard] = []
@@ -118,7 +129,9 @@ class ModelsPage(QWidget):
         self._build_ui()
 
         if self.main_window is not None:
-            self.main_window.active_model_changed.connect(self._on_active_model_changed)
+            self.main_window.active_model_changed.connect(
+                self._on_active_model_changed
+            )
 
         self._reload_models()
 
@@ -134,7 +147,9 @@ class ModelsPage(QWidget):
 
         self._load_error_label = QLabel("")
         self._load_error_label.setWordWrap(True)
-        self._load_error_label.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 12px; background: transparent;")
+        self._load_error_label.setStyleSheet(
+            f"color: {DANGER_COLOR}; font-size: 12px; background: transparent;"
+        )
         self._load_error_label.setVisible(False)
         root.addWidget(self._load_error_label)
 
@@ -149,14 +164,18 @@ class ModelsPage(QWidget):
 
         self._no_match_label = QLabel("Nothing matches that search.")
         self._no_match_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._no_match_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; padding: 40px;")
+        self._no_match_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 13px; padding: 40px;"
+        )
         self._no_match_label.setVisible(False)
         body_layout.addWidget(self._no_match_label)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+        )
         self._cards_grid = _CardsGrid()
         self._scroll.setWidget(self._cards_grid)
         body_layout.addWidget(self._scroll)
@@ -168,7 +187,9 @@ class ModelsPage(QWidget):
         header.setSpacing(4)
 
         title = QLabel("Models")
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 16px; background: transparent;")
+        title.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 16px; background: transparent;"
+        )
         header.addWidget(title)
 
         return header
@@ -178,8 +199,10 @@ class ModelsPage(QWidget):
         self._search_edit.setPlaceholderText("Search by name\u2026")
         self._search_edit.setFixedHeight(32)
         self._search_edit.setStyleSheet(
-            f"QLineEdit {{ background-color: {SURFACE_COLOR}; color: {TEXT_PRIMARY};"
-            f"border: 1px solid #3A3D44; border-radius: 3px; padding: 4px 8px; font-size: 13px; }}"
+            f"QLineEdit {{ background-color: {SURFACE_COLOR};"
+            f" color: {TEXT_PRIMARY};"
+            f"border: 1px solid #3A3D44; border-radius: 3px;"
+            f" padding: 4px 8px; font-size: 13px; }}"
         )
         self._search_edit.textChanged.connect(self._on_search_text_changed)
         return self._search_edit
@@ -193,7 +216,10 @@ class ModelsPage(QWidget):
 
         message = QLabel("No saved models yet.")
         message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        message.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; background: transparent;")
+        message.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 13px;"
+            f" background: transparent;"
+        )
         layout.addWidget(message, 0, Qt.AlignmentFlag.AlignHCenter)
 
         train_link = QPushButton("Train one")
@@ -212,7 +238,9 @@ class ModelsPage(QWidget):
         try:
             metadata_list = list_saved_models(MODELS_DIR)
         except OSError as exc:
-            self._load_error_label.setText(f"Couldn't read the models folder: {exc}")
+            self._load_error_label.setText(
+                f"Couldn't read the models folder: {exc}"
+            )
             self._load_error_label.setVisible(True)
             metadata_list = []
         else:
@@ -223,7 +251,9 @@ class ModelsPage(QWidget):
         self._cards = []
 
         for metadata in metadata_list:
-            card = ModelCard(metadata, is_active=self._is_active_model(metadata))
+            card = ModelCard(
+                metadata, is_active=self._is_active_model(metadata)
+            )
             card.load_requested.connect(self._on_load_requested)
             card.delete_requested.connect(self._on_delete_requested)
             card.retrain_requested.connect(self._on_retrain_requested)
@@ -232,12 +262,18 @@ class ModelsPage(QWidget):
         self._apply_search_filter()
 
     def _is_active_model(self, metadata: Dict[str, Any]) -> bool:
-        active_model = getattr(self.main_window, "active_model", None) if self.main_window else None
+        active_model = (
+            getattr(self.main_window, "active_model", None)
+            if self.main_window
+            else None
+        )
         if not active_model:
             return False
         return active_model.get("path") == metadata.get("model_path")
 
-    def _on_active_model_changed(self, _active_model: Optional[Dict[str, Any]]) -> None:
+    def _on_active_model_changed(
+        self, _active_model: Optional[Dict[str, Any]]
+    ) -> None:
         for card in self._cards:
             card.set_active(self._is_active_model(card.metadata))
 
@@ -247,7 +283,11 @@ class ModelsPage(QWidget):
     def _apply_search_filter(self) -> None:
         query = self._search_edit.text().strip().lower()
         if query:
-            visible = [card for card in self._cards if query in (card.metadata.get("name") or "").lower()]
+            visible = [
+                card
+                for card in self._cards
+                if query in (card.metadata.get("name") or "").lower()
+            ]
         else:
             visible = list(self._cards)
 

@@ -1,37 +1,33 @@
 # BitumenGrader
 
-Desktop app that trains a CNN to predict Water, Solids, and Bitumen % from froth photos. The default model is a compact CNN trained from scratch; ImageNet transfer (ResNet50 / VGG16) is optional. Train or continue a saved model on a new dataset, grade new photos, and manage saved models.
+BitumenGrader is a desktop app that trains a small CNN on labelled froth
+photos and then predicts Water, Solids, and Bitumen percentages from new
+images. You load a labels table, match it to a photo folder, train (or
+continue) a model, and grade photos one at a time or in a batch. The
+default architecture is a compact CNN trained from scratch; ImageNet
+transfer (ResNet50 / VGG16) is optional.
 
-## Install
+## Setup
+
+You need **Python 3.9+** and a few GB of disk space (PyTorch is large).
 
 ```bash
-git clone <repository-url> BitumenGrader
 cd BitumenGrader
 pip install -r requirements.txt
 ```
 
-Run:
+## Run
 
 ```bash
 python main.py
 ```
 
-See [USER_GUIDE.txt](USER_GUIDE.txt) for grading, training, settings, and troubleshooting.
+The window has three pages: **Train**, **Grade**, and **Models**.
 
-## Tests
+1. **Train** — load a labels file (`Image`, `Pan`, `Water`, `Solids`,
+   `Bitumen`) and a photo folder, then start training. Sample photos are in
+   `BitumenImagesFlotation/`. Saved models go in `models/`.
+2. **Models** — load, retrain, or delete a saved model.
+3. **Grade** — drop photos onto the queue and run the active model.
 
-```bash
-pip install -r requirements-dev.txt
-python -m pytest tests/smoke_test.py -v
-```
-
-## Package a desktop build
-
-Requires the dev extras (PyInstaller). From the repo root:
-
-```bash
-pip install -r requirements-dev.txt
-pyinstaller BitumenGrader.spec
-```
-
-The folder `dist/BitumenGrader/` is the runnable app (`BitumenGrader.app` on macOS). PyTorch makes the bundle large. Sample photos in `BitumenImagesFlotation/` and checkpoints in `models/` are not copied into the build; a packaged app saves new models in the OS application-data folder.
+Full walkthrough, settings, and troubleshooting: `USER_GUIDE.txt`.

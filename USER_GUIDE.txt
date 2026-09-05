@@ -1,55 +1,80 @@
 ════════════════════════════════════════════════════════
-  BITUMENGRADER — USER GUIDE
+  BITUMENGRADER — HOW TO USE THE APP
 ════════════════════════════════════════════════════════
+
+This file is the full user guide: what you need, how to install,
+and how to train, grade, and manage models.
+
 
 1. WHAT IT DOES
 ---------------
 
-BitumenGrader looks at photos of bitumen samples and predicts three
-percentages: Water, Solids, and Bitumen.
+BitumenGrader looks at photos of bitumen / froth samples and predicts
+three percentages: Water, Solids, and Bitumen.
 
-You train a model on photos that already have lab labels, then use that
-model to grade new photos. It won't replace a full lab test, but it's a
-fast way to get a repeatable estimate from a picture.
+You train a model on photos that already have lab labels, then use
+that model to grade new photos. It will not replace a full lab test,
+but it is a fast, repeatable estimate from a picture.
 
 Predictions also show a sum check (Water + Solids + Bitumen should be
 near 100%) and a rough closest-batch guess from the Bitumen value.
 The labels column is still named Pan; that is the batch number.
 
+The default model is a compact CNN trained from scratch on froth
+photos. ImageNet transfer (ResNet50 / VGG16) is optional.
 
-2. INSTALL AND RUN
+
+2. WHAT YOU NEED
+---------------
+
+Computer
+  - Windows 10/11, macOS 11+, or a recent Linux
+  - Python 3.9 or newer
+  - A few GB of free disk space (PyTorch is large)
+  - Ideally 4 GB+ RAM
+  - A GPU is optional. Training and grading work on CPU; a CUDA GPU
+    or Apple Metal speeds training up.
+
+Python packages (install with the command in section 3)
+  - torch, torchvision   neural network and image models
+  - PyQt6                desktop window and controls
+  - Pillow               open and resize photos
+  - numpy                numeric arrays
+  - pandas               read CSV / Excel labels
+  - openpyxl             Excel (.xlsx / .xls) labels
+  - matplotlib           training charts on the Train and Models pages
+
+For training you also need:
+  - A labels table (CSV, TXT, or Excel) with columns:
+      Image, Pan, Water, Solids, Bitumen
+    Image is the filename (extension optional). Pan is the batch
+    number. An optional Campaign / Experiment / Run column is used
+    to hold whole flotation campaigns out of training.
+  - A folder of those photos (JPG, PNG, or TIF, including TIFF).
+    Nested folders are included.
+  - Ideally 50+ images per batch (200+ is better). Mix lighting and
+    framing so the model is not too picky later.
+
+For grading you need at least one saved model and the photos to grade.
+
+
+3. INSTALL AND RUN
 ------------------
 
-You need:
-  - Python 3.9+
-  - Windows 10/11, macOS 11+, or a recent Linux
-  - A few GB of free disk space (PyTorch is big) and ideally 4 GB+ RAM
-
-Install dependencies once:
+From the project folder:
 
     pip install -r requirements.txt
-
-Start the app:
-
     python main.py
 
 You should see three sidebar pages: Train, Grade, and Models.
 
-To run the offline tests (or build a packaged app):
-
-    pip install -r requirements-dev.txt
-    python -m pytest tests/smoke_test.py -v
-    pyinstaller BitumenGrader.spec
-
-A packaged app saves models in the OS application-data folder
-(macOS: ~/Library/Application Support/BitumenGrader/models,
-Windows: %APPDATA%\BitumenGrader\models,
-Linux: ~/.bitumengrader/models).
-When you run from source, models stay in the project's models/ folder.
+Saved models go in the project's models/ folder.
 
 
-3. GRADE PHOTOS (EXISTING MODEL)
---------------------------------
+4. GRADE PHOTOS
+---------------
+
+Use this when you already have a trained model.
 
 1. Open Models and click Load on the card you want. The loaded name
    shows at the bottom of the sidebar; click it to switch.
@@ -63,48 +88,38 @@ When you run from source, models stay in the project's models/ folder.
      than about 5% off
    - Closest batch (rough, from Bitumen %; Pan in the labels file)
 6. Export CSV if you want a spreadsheet of the batch.
-7. Clear results (or Clear queue) when you're done with that batch.
+7. Clear results (or Clear queue) when you are done with that batch.
 
 
-4. TRAIN A NEW MODEL
+5. TRAIN A NEW MODEL
 --------------------
 
-You need:
-  - A CSV/Excel file with columns: Image, Pan, Water, Solids, Bitumen
-    (Image = filename; extension optional; Pan = batch number). An optional
-    Campaign / Experiment / Run column is used to hold whole flotation
-    campaigns out of training.
-  - A folder of those photos
-  - Ideally 50+ images per batch (200+ is better). Mix lighting and
-    framing a bit so the model isn't too picky later.
-
-Steps:
-1. Train → load the labels table (drop a .csv/.xlsx/.xls/.txt, or choose a file).
-2. Drop or choose the photo folder. Nested folders are included. Check the
-   match summary; fix unmatched names if the match rate is low.
+1. Train → load the labels table (drop a .csv / .xlsx / .xls / .txt,
+   or choose a file).
+2. Drop or choose the photo folder. Nested folders are included. Check
+   the match summary; fix unmatched names if the match rate is low.
 3. Review the dataset summary (train / validation / test counts, ranges,
    batch counts, and which campaigns landed in each split).
-4. Name the model. Leave Architecture on Baseline CNN unless you have a
-   reason to try ImageNet transfer (mainly for Solids).
-5. Optional: check "Continue training a saved model" to keep training an
-   existing checkpoint on this new dataset. That saves a new model and
-   leaves the original on the Models page.
+4. Name the model. Leave Architecture on Baseline CNN unless you have
+   a reason to try ImageNet transfer (mainly for Solids).
+5. Optional: check "Continue training a saved model" to keep training
+   an existing checkpoint on this new dataset. That saves a new model
+   and leaves the original on the Models page.
 6. Start training. Watch loss and R² charts and the log. You can Stop
    anytime; the best validation R² checkpoint so far is kept.
 7. When it finishes, the model is saved and set as active. Go grade
    some photos to try it.
 
-The default is a compact CNN trained from scratch on froth photos. That
-is more robust on this kind of image than starting from ImageNet. ResNet50
-and VGG16 transfer are optional second-stage experiments; compare them to
-the baseline before you rely on them.
+Baseline CNN from scratch is the most robust default for froth images.
+ResNet50 and VGG16 transfer are optional second-stage experiments;
+compare them to the baseline before you rely on them.
 
 
-5. TRAINING SETTINGS
+6. TRAINING SETTINGS
 --------------------
 
-Only a few choices are on the Train page. Everything else is locked to the
-Prince & Prasad froth-image recipe (their Table 2).
+Only a few choices are on the Train page. Everything else is locked to
+the Prince & Prasad froth-image recipe (their Table 2).
 
   Architecture (default Baseline CNN)
     Baseline CNN is trained from scratch and is the safest default.
@@ -113,25 +128,28 @@ Prince & Prasad froth-image recipe (their Table 2).
 
   Adaptation (ResNet50 / VGG16)
     Fine-tune trains the whole net at 1e-4 (recommended; won the study's
-    useful transfer runs). Frozen features keep the ImageNet backbone fixed
-    and train only the head at 1e-3; that was weaker, especially for Bitumen.
+    useful transfer runs). Frozen features keep the ImageNet backbone
+    fixed and train only the head at 1e-3; that was weaker, especially
+    for Bitumen.
 
   Head (ResNet50 / VGG16)
-    Native = one linear layer. 2-layer (C2) is the custom head that helped
-    Solids. Deeper batch-norm heads are not offered; they collapse.
+    Native = one linear layer. 2-layer (C2) is the custom head that
+    helped Solids. Deeper batch-norm heads are not offered; they
+    collapse.
 
   Continue training a saved model
-    Loads that checkpoint and trains it further on the labels/folder you
-    pick. Architecture and head stay locked. A new file is saved.
+    Loads that checkpoint and trains it further on the labels/folder
+    you pick. Architecture and head stay locked. A new file is saved.
 
   Epochs (default 100)
-    How many full passes over the training images. The study trained the
-    full 100 epochs; the app keeps the checkpoint with the best mean
-    validation R². You can still Stop Training at any time.
+    How many full passes over the training images. The study trained
+    the full 100 epochs; the app keeps the checkpoint with the best
+    mean validation R². You can still Stop at any time.
 
   Batch size (default 32)
-    How many photos Adam sees in one step. The study used 32. Drop this
-    if training runs out of memory. Raising it can speed up a GPU run.
+    How many photos Adam sees in one step. The study used 32. Drop
+    this if training runs out of memory. Raising it can speed up a
+    GPU run.
 
   Learning rate (default 0.0001, or 0.001 for frozen features)
     Size of each Adam update. Adaptation fills in the study value:
@@ -142,68 +160,77 @@ Fixed behind the scenes (not shown in the UI):
 
   Campaign hold-out split when two or more flotation runs are found
     (from a Campaign/Experiment/Run column, or _N12 in the filename).
-    Falls back to a random 64/16/20 image split if only one campaign exists.
-  Adam with a constant learning rate, no weight decay, no early stopping
-  MSE on raw Water / Solids / Bitumen percentages (no z-score, no sum penalty)
-  Images standardized to 256×256 before training (any source resolution);
-    only left-right and up-down flips after that
-  The head starts at the training-set mean composition so the first epoch
-    is “guess the average,” not “guess 0%”
-  Best checkpoint selected by validation R² (the study's regression metric)
+    Falls back to a random 64/16/20 image split if only one campaign
+    exists.
+  Adam with a constant learning rate, no weight decay, no early
+    stopping
+  MSE on raw Water / Solids / Bitumen percentages (no z-score, no
+    sum penalty)
+  Images standardized to 256×256 before training (any source
+    resolution); only left-right and up-down flips after that
+  The head starts at the training-set mean composition so the first
+    epoch is “guess the average,” not “guess 0%”
+  Best checkpoint selected by validation R² (the study's
+    regression metric)
   3-bin equal-frequency accuracy is recorded as a diagnostic
   Transfer models start from ImageNet weights
 
 
-6. MODELS
+7. MODELS
 ---------
 
-Each trained model is saved under models/ as a .pt (weights) and a .json
-(stats and history). Cards show a headline R² (test if it was saved,
-otherwise validation) so you can compare accuracy at a glance. Retrain
-continues that checkpoint on a new labelled dataset (Train page) and
-writes a new file.
+Each trained model is saved as a .pt (weights) and a .json (stats
+and history). Cards show a headline R² (test if it was saved,
+otherwise validation) so you can compare accuracy at a glance.
 
-Load sets it for grading. Delete removes that model for good.
+  Load      set this model for grading
+  Retrain   continue this checkpoint on a new labelled dataset
+            (opens the Train page; writes a new file)
+  Delete     remove that model for good
 
 
-7. READING RESULTS
+8. READING RESULTS
 ------------------
 
-R² is the study's regression score: 1.0 is a perfect fit, 0.0 is no better
-than predicting the mean, and a negative value means the model is worse
-than that mean (a failed transfer in the paper). Compare R² across your
-own models.
+R² is the study's regression score: 1.0 is a perfect fit, 0.0 is no
+better than predicting the mean, and a negative value means the model
+is worse than that mean (a failed transfer in the paper). Compare R²
+across your own models.
 
-MAE (±X%) is the average absolute error vs lab labels. Smaller is better.
+MAE (±X%) is the average absolute error vs lab labels. Smaller is
+better.
 
-Sum check: how far Water+Solids+Bitumen is from 100%. Under ~2% is
-tight; over ~5% means treat that photo carefully (bad lighting, odd
-crop, etc.).
+Sum check: how far Water + Solids + Bitumen is from 100%. Under ~2%
+is tight; over ~5% means treat that photo carefully (bad lighting,
+odd crop, etc.).
 
 If R² is low or MAE is high: more/varied photos, cleaner labels, longer
 training, or crop backgrounds. See the settings above.
 
 
-8. TROUBLESHOOTING
+9. TROUBLESHOOTING
 ------------------
 
   Won't start
-    Check Python version, then: pip install -r requirements.txt
+    Check Python 3.9+, then: pip install -r requirements.txt
+    Run: python main.py from the project folder.
 
   Model won't load
-    File may be missing or moved. Retrain or load another from the Models page.
+    File may be missing or moved. Retrain or load another from Models.
 
   Training fails
-    Check the progress log. If you run out of memory, close other apps.
+    Check the progress log. If you run out of memory, close other
+    apps or lower Batch size.
 
   High MAE / weird grades
     Check CSV values, add more photos, raise epochs, improve framing.
-    A negative R² on the test split is a warning the model did not learn.
+    A negative R² on the test split is a warning the model did not
+    learn.
 
   R² around −10 or worse
-    The model did worse than guessing the average. Leave Epochs at 100
-    (the study default). Retrain with the current app; new runs start at
-    the training-set mean instead of predicting 0%.
+    The model did worse than guessing the average. Leave Epochs at
+    100 (the study default). Retrain with the current app; new runs
+    start at the training-set mean instead of predicting 0%.
 
   Photos or tables won't open
     Use JPG/PNG/TIF for photos and CSV/Excel/TXT for labels. Nested

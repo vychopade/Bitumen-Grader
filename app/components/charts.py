@@ -1,4 +1,5 @@
 """Matplotlib axis styling shared by training charts and model cards."""
+
 from __future__ import annotations
 
 from typing import Optional

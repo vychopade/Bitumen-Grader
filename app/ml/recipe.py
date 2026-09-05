@@ -4,6 +4,7 @@ Shared across the trainer, dataset split, and Train page so the desktop app
 follows the same optimisation protocol as the study rather than a mix of
 schedules, penalties, and early-stop heuristics.
 """
+
 from __future__ import annotations
 
 # Table 2 — training configuration shared across all strategies.

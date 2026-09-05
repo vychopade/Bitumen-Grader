@@ -1,4 +1,5 @@
 """Train-page widgets: CSV drop zone and dataset summary cards."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,7 +31,12 @@ from app.theme import (
     drop_zone_qss,
     ghost_button_qss,
 )
-from app.utils.files import pick_image_folder, pick_labels_file, drop_has_accepted_files, dropped_local_paths
+from app.utils.files import (
+    drop_has_accepted_files,
+    dropped_local_paths,
+    pick_image_folder,
+    pick_labels_file,
+)
 
 MAX_UNMATCHED_PREVIEW = 200
 
@@ -41,10 +47,14 @@ def _drop_zone_label(text: str, *, primary: bool) -> QLabel:
     label.setWordWrap(True)
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     label.setMinimumWidth(0)
-    label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    label.setSizePolicy(
+        QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+    )
     color = TEXT_PRIMARY if primary else TEXT_SECONDARY
     size = 13 if primary else 11
-    label.setStyleSheet(f"color: {color}; font-size: {size}px; background: transparent;")
+    label.setStyleSheet(
+        f"color: {color}; font-size: {size}px; background: transparent;"
+    )
     return label
 
 
@@ -70,7 +80,9 @@ class _CsvDropZone(_DropZoneFrame):
         super().__init__(parent)
         self.setObjectName("csvDropZone")
         self.setAcceptDrops(True)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         self._build_ui()
         self._apply_style(active=False)
 
@@ -82,7 +94,9 @@ class _CsvDropZone(_DropZoneFrame):
         title = _drop_zone_label("Drop a labels file", primary=True)
         layout.addWidget(title)
 
-        subtitle = _drop_zone_label(".csv, .txt, .xlsx, or .xls", primary=False)
+        subtitle = _drop_zone_label(
+            ".csv, .txt, .xlsx, or .xls", primary=False
+        )
         layout.addWidget(subtitle)
 
         self.browse_button = QPushButton("Choose file")
@@ -128,7 +142,9 @@ class _FolderDropZone(_DropZoneFrame):
         super().__init__(parent)
         self.setObjectName("folderDropZone")
         self.setAcceptDrops(True)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         self._build_ui()
         self._apply_style(active=False)
 
@@ -140,7 +156,9 @@ class _FolderDropZone(_DropZoneFrame):
         title = _drop_zone_label("Drop a photo folder", primary=True)
         layout.addWidget(title)
 
-        subtitle = _drop_zone_label("JPG, PNG, or TIF — nested folders included", primary=False)
+        subtitle = _drop_zone_label(
+            "JPG, PNG, or TIF — nested folders included", primary=False
+        )
         layout.addWidget(subtitle)
 
         self.browse_button = QPushButton("Choose folder")
@@ -207,22 +225,28 @@ class _MatchSummaryCard(QFrame):
         self._invalid_summary_label = QLabel("")
         self._invalid_summary_label.setWordWrap(True)
         self._invalid_summary_label.setStyleSheet(
-            f"color: {DANGER_COLOR}; font-size: 12px; font-weight: 600; background: transparent;"
+            f"color: {DANGER_COLOR}; font-size: 12px; font-weight: 600;"
+            f" background: transparent;"
         )
         self._invalid_summary_label.setVisible(False)
         layout.addWidget(self._invalid_summary_label)
 
         self._tip_label = QLabel("")
         self._tip_label.setWordWrap(True)
-        self._tip_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        self._tip_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px;"
+            f" background: transparent;"
+        )
         self._tip_label.setVisible(False)
         layout.addWidget(self._tip_label)
 
         self.toggle_button = QPushButton("")
         self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_button.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {TEXT_SECONDARY}; border: none;"
-            f"text-decoration: underline; font-size: 11px; text-align: left; padding: 0px; }}"
+            f"QPushButton {{ background: transparent;"
+            f" color: {TEXT_SECONDARY}; border: none;"
+            f"text-decoration: underline; font-size: 11px; text-align: left;"
+            f" padding: 0px; }}"
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
         )
         self.toggle_button.clicked.connect(self._toggle_unmatched)
@@ -231,24 +255,36 @@ class _MatchSummaryCard(QFrame):
 
         self._unmatched_label = QLabel("")
         self._unmatched_label.setWordWrap(True)
-        self._unmatched_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        self._unmatched_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px;"
+            f" background: transparent;"
+        )
         self._unmatched_label.setVisible(False)
         layout.addWidget(self._unmatched_label)
 
         self._invalid_toggle_button = QPushButton("")
-        self._invalid_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._invalid_toggle_button.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
         self._invalid_toggle_button.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {DANGER_COLOR}; border: none;"
-            f"text-decoration: underline; font-size: 11px; text-align: left; padding: 0px; }}"
+            f"QPushButton {{ background: transparent; color: {DANGER_COLOR};"
+            f" border: none;"
+            f"text-decoration: underline; font-size: 11px; text-align: left;"
+            f" padding: 0px; }}"
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
         )
         self._invalid_toggle_button.clicked.connect(self._toggle_invalid)
         self._invalid_toggle_button.setVisible(False)
-        layout.addWidget(self._invalid_toggle_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(
+            self._invalid_toggle_button, 0, Qt.AlignmentFlag.AlignLeft
+        )
 
         self._invalid_rows_label = QLabel("")
         self._invalid_rows_label.setWordWrap(True)
-        self._invalid_rows_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        self._invalid_rows_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px;"
+            f" background: transparent;"
+        )
         self._invalid_rows_label.setVisible(False)
         layout.addWidget(self._invalid_rows_label)
 
@@ -265,19 +301,23 @@ class _MatchSummaryCard(QFrame):
         else:
             color = DANGER_COLOR
         self._summary_label.setStyleSheet(
-            f"color: {color}; font-size: 15px; font-weight: 700; background: transparent;"
+            f"color: {color}; font-size: 15px; font-weight: 700;"
+            f" background: transparent;"
         )
 
         if rate_pct < 50:
             self._tip_label.setText(
-                "Check that CSV filenames match your image files. Matching works "
+                "Check that CSV filenames match your image files. Matching "
+                "works "
                 "with or without the file extension."
             )
             self._tip_label.setVisible(True)
         else:
             self._tip_label.setVisible(False)
 
-        unmatched_files: List[str] = list(match_summary.get("unmatched_files", []))
+        unmatched_files: List[str] = list(
+            match_summary.get("unmatched_files", [])
+        )
         self._unmatched_count = len(unmatched_files)
         if unmatched_files:
             preview = unmatched_files[:MAX_UNMATCHED_PREVIEW]
@@ -290,19 +330,25 @@ class _MatchSummaryCard(QFrame):
             self.toggle_button.setVisible(False)
 
         self._unmatched_label.setVisible(False)
-        self.toggle_button.setText(f"Show unmatched filenames ({self._unmatched_count}) \u25be")
+        self.toggle_button.setText(
+            f"Show unmatched filenames ({self._unmatched_count}) \u25be"
+        )
 
         invalid_rows: List[Dict] = list(match_summary.get("invalid_rows", []))
         self._invalid_count = len(invalid_rows)
         if invalid_rows:
             word = "row" if self._invalid_count == 1 else "rows"
             self._invalid_summary_label.setText(
-                f"{self._invalid_count} {word} skipped \u2014 couldn't read Water/Solids/Bitumen/Pan (batch)."
+                f"{self._invalid_count} {word} skipped \u2014 couldn't read "
+                f"Water/Solids/Bitumen/Pan (batch)."
             )
             self._invalid_summary_label.setVisible(True)
 
             preview = invalid_rows[:MAX_UNMATCHED_PREVIEW]
-            text = "\n".join(f"\u201c{entry['image']}\u201d \u2014 {entry['reason']}" for entry in preview)
+            text = "\n".join(
+                f"\u201c{entry['image']}\u201d \u2014 {entry['reason']}"
+                for entry in preview
+            )
             if len(invalid_rows) > len(preview):
                 text += f"\n\u2026and {len(invalid_rows) - len(preview)} more"
             self._invalid_rows_label.setText(text)
@@ -312,21 +358,27 @@ class _MatchSummaryCard(QFrame):
             self._invalid_toggle_button.setVisible(False)
 
         self._invalid_rows_label.setVisible(False)
-        self._invalid_toggle_button.setText(f"Show invalid rows ({self._invalid_count}) \u25be")
+        self._invalid_toggle_button.setText(
+            f"Show invalid rows ({self._invalid_count}) \u25be"
+        )
 
     def _toggle_invalid(self) -> None:
         showing = not self._invalid_rows_label.isVisible()
         self._invalid_rows_label.setVisible(showing)
         verb = "Hide" if showing else "Show"
         arrow = "\u25b4" if showing else "\u25be"
-        self._invalid_toggle_button.setText(f"{verb} invalid rows ({self._invalid_count}) {arrow}")
+        self._invalid_toggle_button.setText(
+            f"{verb} invalid rows ({self._invalid_count}) {arrow}"
+        )
 
     def _toggle_unmatched(self) -> None:
         showing = not self._unmatched_label.isVisible()
         self._unmatched_label.setVisible(showing)
         verb = "Hide" if showing else "Show"
         arrow = "\u25b4" if showing else "\u25be"
-        self.toggle_button.setText(f"{verb} unmatched filenames ({self._unmatched_count}) {arrow}")
+        self.toggle_button.setText(
+            f"{verb} unmatched filenames ({self._unmatched_count}) {arrow}"
+        )
 
 
 class _DatasetSummaryCard(QFrame):
@@ -342,23 +394,29 @@ class _DatasetSummaryCard(QFrame):
 
         self._counts_label = QLabel("")
         self._counts_label.setWordWrap(True)
-        self._counts_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
+        self._counts_label.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;"
+        )
         layout.addWidget(self._counts_label)
 
         ranges_title = QLabel("Output ranges:")
         ranges_title.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; background: transparent;"
+            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600;"
+            f" background: transparent;"
         )
         layout.addWidget(ranges_title)
 
         self._ranges_label = QLabel("")
         self._ranges_label.setWordWrap(True)
-        self._ranges_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
+        self._ranges_label.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;"
+        )
         layout.addWidget(self._ranges_label)
 
         pan_title = QLabel("Batches:")
         pan_title.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; background: transparent;"
+            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600;"
+            f" background: transparent;"
         )
         layout.addWidget(pan_title)
 
@@ -368,14 +426,17 @@ class _DatasetSummaryCard(QFrame):
 
         self._campaigns_title = QLabel("Held-out campaigns:")
         self._campaigns_title.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; background: transparent;"
+            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600;"
+            f" background: transparent;"
         )
         self._campaigns_title.setVisible(False)
         layout.addWidget(self._campaigns_title)
 
         self._campaigns_label = QLabel("")
         self._campaigns_label.setWordWrap(True)
-        self._campaigns_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
+        self._campaigns_label.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;"
+        )
         self._campaigns_label.setVisible(False)
         layout.addWidget(self._campaigns_label)
 
@@ -407,9 +468,12 @@ class _DatasetSummaryCard(QFrame):
 
         lines = []
         for label in OUTPUT_NAMES:
-            values = output_ranges.get(label, {"min": 0.0, "max": 0.0, "mean": 0.0})
+            values = output_ranges.get(
+                label, {"min": 0.0, "max": 0.0, "mean": 0.0}
+            )
             lines.append(
-                f"{label}: {values['min']:.2f} \u2013 {values['max']:.2f} % (mean {values['mean']:.2f})"
+                f"{label}: {values['min']:.2f} \u2013 {values['max']:.2f} % "
+                f"(mean {values['mean']:.2f})"
             )
         self._ranges_label.setText("\n".join(lines))
 
@@ -429,7 +493,10 @@ class _DatasetSummaryCard(QFrame):
 
             label = QLabel(f"Batch {grade}: {count}")
             label.setMinimumWidth(96)
-            label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+            label.setStyleSheet(
+                f"color: {TEXT_SECONDARY}; font-size: 11px;"
+                f" background: transparent;"
+            )
             row_layout.addWidget(label)
 
             bar = QProgressBar()
@@ -438,18 +505,26 @@ class _DatasetSummaryCard(QFrame):
             bar.setTextVisible(False)
             bar.setFixedHeight(10)
             bar.setStyleSheet(
-                f"QProgressBar {{ background-color: {SURFACE_COLOR}; border-radius: 5px; border: none; }}"
-                f"QProgressBar::chunk {{ background-color: {ACCENT_COLOR}; border-radius: 5px; }}"
+                f"QProgressBar {{ background-color: {SURFACE_COLOR};"
+                f" border-radius: 5px; border: none; }}"
+                f"QProgressBar::chunk {{ background-color: {ACCENT_COLOR};"
+                f" border-radius: 5px; }}"
             )
             row_layout.addWidget(bar, 1)
 
             self._pan_container.addWidget(row_widget)
 
-        show_campaigns = split_mode == "experiment" or bool(split_fallback_reason)
+        show_campaigns = split_mode == "experiment" or bool(
+            split_fallback_reason
+        )
         if show_campaigns:
             campaigns = split_campaigns or {}
             lines = []
-            for key, title in (("train", "Train"), ("val", "Val"), ("test", "Test")):
+            for key, title in (
+                ("train", "Train"),
+                ("val", "Val"),
+                ("test", "Test"),
+            ):
                 names = campaigns.get(key) or []
                 lines.append(f"{title}: {', '.join(names) if names else '—'}")
             if split_fallback_reason:
@@ -460,4 +535,3 @@ class _DatasetSummaryCard(QFrame):
         else:
             self._campaigns_title.setVisible(False)
             self._campaigns_label.setVisible(False)
-

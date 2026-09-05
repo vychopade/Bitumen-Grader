@@ -1,4 +1,5 @@
 """Add project root to sys.path so ``app`` imports work."""
+
 from __future__ import annotations
 
 import sys

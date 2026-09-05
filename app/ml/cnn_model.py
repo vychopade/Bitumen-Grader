@@ -1,10 +1,12 @@
-"""Froth-image regressors aligned with Prince & Prasad transfer-learning findings.
+"""Froth-image regressors aligned with Prince & Prasad transfer-learning
+findings.
 
 Default is a compact CNN trained from scratch. ImageNet VGG16 / ResNet50
 variants are optional second-stage candidates (mainly for Solids). Over-
 parameterised 3-layer batch-normalised heads are not offered: they collapse
 into negative transfer on this domain.
 """
+
 from __future__ import annotations
 
 from typing import Iterable, Optional
@@ -23,7 +25,11 @@ def select_torch_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     backends_mps = getattr(torch.backends, "mps", None)
-    is_available = getattr(backends_mps, "is_available", None) if backends_mps is not None else None
+    is_available = (
+        getattr(backends_mps, "is_available", None)
+        if backends_mps is not None
+        else None
+    )
     try:
         if callable(is_available) and is_available():
             return torch.device("mps")
@@ -46,7 +52,9 @@ ARCHITECTURE_LABELS = {
 
 def _conv_block(in_channels: int, out_channels: int) -> nn.Sequential:
     return nn.Sequential(
-        nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+        nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, padding=1, bias=False
+        ),
         nn.BatchNorm2d(out_channels),
         nn.ReLU(inplace=True),
         nn.MaxPool2d(2),
@@ -54,7 +62,8 @@ def _conv_block(in_channels: int, out_channels: int) -> nn.Sequential:
 
 
 class CompactFrothCNN(nn.Module):
-    """Compact texture CNN: five conv stages + global average pool → 256-d features.
+    """Compact texture CNN: five conv stages + global average pool → 256-d
+    features.
 
     Designed for froth surfaces (repetitive texture, weak object structure)
     rather than ImageNet object semantics.
@@ -82,7 +91,10 @@ class CompactFrothCNN(nn.Module):
 def infer_architecture(state_dict: dict) -> str:
     """Guess architecture from checkpoint keys when metadata is missing."""
     keys = list(state_dict.keys())
-    if any(key == "backbone.fc.weight" or key == "backbone.fc.bias" for key in keys):
+    if any(
+        key == "backbone.fc.weight" or key == "backbone.fc.bias"
+        for key in keys
+    ):
         return "resnet18"
     if any(key.startswith("backbone.layer") for key in keys):
         return "resnet50"
@@ -100,14 +112,18 @@ def infer_head(state_dict: dict) -> str:
     return "native"
 
 
-def _make_head(in_features: int, head_type: str, num_outputs: int = NUM_OUTPUTS) -> nn.Module:
+def _make_head(
+    in_features: int, head_type: str, num_outputs: int = NUM_OUTPUTS
+) -> nn.Module:
     """Native linear head, or a lightweight 2-layer FC head (C2).
 
     C2 is the only custom head evaluated as competitive in the paper.
     3-layer batch-normalised heads (C3BN) are intentionally omitted.
     """
     if head_type not in HEAD_TYPES:
-        raise ValueError(f"head must be one of {HEAD_TYPES}, got {head_type!r}")
+        raise ValueError(
+            f"head must be one of {HEAD_TYPES}, got {head_type!r}"
+        )
     if head_type == "c2":
         hidden = 256 if in_features >= 256 else 128
         return nn.Sequential(
@@ -125,9 +141,11 @@ class BitumenRegressor(nn.Module):
     Parameters
     ----------
     architecture:
-        ``baseline`` (default), ``resnet50``, ``vgg16``, or ``resnet18`` (legacy).
+        ``baseline`` (default), ``resnet50``, ``vgg16``,
+        or ``resnet18`` (legacy).
     pretrained:
-        ImageNet initialisation. Ignored for ``baseline`` (always from scratch).
+        ImageNet initialisation. Ignored for ``baseline`` (always from
+        scratch).
         Default False: ImageNet transfer is not the operational default.
     head:
         ``native`` (single linear) or ``c2`` (2-layer FC).
@@ -142,7 +160,10 @@ class BitumenRegressor(nn.Module):
     ):
         super().__init__()
         if architecture not in ARCHITECTURES:
-            raise ValueError(f"architecture must be one of {ARCHITECTURES}, got {architecture!r}")
+            raise ValueError(
+                f"architecture must be one of {ARCHITECTURES}, got "
+                f"{architecture!r}"
+            )
         if head not in HEAD_TYPES:
             raise ValueError(f"head must be one of {HEAD_TYPES}, got {head!r}")
 
@@ -155,16 +176,22 @@ class BitumenRegressor(nn.Module):
 
         if architecture == "baseline":
             self.backbone = CompactFrothCNN()
-            self.head = _make_head(CompactFrothCNN.feature_dim, head, num_outputs)
+            self.head = _make_head(
+                CompactFrothCNN.feature_dim, head, num_outputs
+            )
         elif architecture == "resnet18":
-            weights = models.ResNet18_Weights.DEFAULT if self.pretrained else None
+            weights = (
+                models.ResNet18_Weights.DEFAULT if self.pretrained else None
+            )
             backbone = models.resnet18(weights=weights)
             in_features = backbone.fc.in_features
             backbone.fc = nn.Linear(in_features, num_outputs)
             self.backbone = backbone
             self.head = None
         elif architecture == "resnet50":
-            weights = models.ResNet50_Weights.DEFAULT if self.pretrained else None
+            weights = (
+                models.ResNet50_Weights.DEFAULT if self.pretrained else None
+            )
             backbone = models.resnet50(weights=weights)
             in_features = backbone.fc.in_features
             backbone.fc = nn.Identity()
@@ -196,8 +223,14 @@ class BitumenRegressor(nn.Module):
     def backbone_parameters(self) -> Iterable[nn.Parameter]:
         """Everything except the regression head."""
         if self._legacy_combined:
-            head_ids = {id(parameter) for parameter in self.backbone.fc.parameters()}
-            return (parameter for parameter in self.backbone.parameters() if id(parameter) not in head_ids)
+            head_ids = {
+                id(parameter) for parameter in self.backbone.fc.parameters()
+            }
+            return (
+                parameter
+                for parameter in self.backbone.parameters()
+                if id(parameter) not in head_ids
+            )
         return self.backbone.parameters()
 
     def freeze_backbone(self) -> None:
@@ -237,7 +270,9 @@ class BitumenRegressor(nn.Module):
         for name in ("Water", "Solids", "Bitumen"):
             stats = output_stats.get(name) or {}
             means.append(float(stats.get("mean", 0.0)))
-        bias = torch.tensor(means, dtype=layer.bias.dtype, device=layer.bias.device)
+        bias = torch.tensor(
+            means, dtype=layer.bias.dtype, device=layer.bias.device
+        )
         with torch.no_grad():
             layer.weight.zero_()
             layer.bias.copy_(bias)
@@ -247,12 +282,15 @@ class BitumenRegressor(nn.Module):
             "architecture": self.architecture,
             "head": self.head_type,
             "pretrained": self.pretrained,
-            "image_size": IMAGE_SIZE if self.architecture != "resnet18" else 224,
+            "image_size": IMAGE_SIZE
+            if self.architecture != "resnet18"
+            else 224,
         }
 
     @classmethod
     def from_checkpoint(cls, path, metadata=None, device=None):
-        """Load weights, reconstructing architecture from metadata when present.
+        """Load weights, reconstructing architecture from metadata when
+        present.
 
         Checkpoints saved before this overhaul have no architecture field and
         are treated as ResNet-18 with a native head.
@@ -261,7 +299,9 @@ class BitumenRegressor(nn.Module):
             device = select_torch_device()
         metadata = metadata or {}
         state_dict = torch.load(path, map_location=device)
-        architecture = metadata.get("architecture") or infer_architecture(state_dict)
+        architecture = metadata.get("architecture") or infer_architecture(
+            state_dict
+        )
         head = metadata.get("head") or infer_head(state_dict)
         if architecture not in ARCHITECTURES:
             architecture = infer_architecture(state_dict)

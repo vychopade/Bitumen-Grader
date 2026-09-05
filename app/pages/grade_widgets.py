@@ -1,4 +1,5 @@
 """Grade-page widgets: queue, drop zone, range bars, and workers."""
+
 from __future__ import annotations
 
 import csv
@@ -8,7 +9,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 from PyQt6.QtCore import QObject, QPointF, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QPainter, QPixmap, QResizeEvent
+from PyQt6.QtGui import (
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QImage,
+    QPainter,
+    QPixmap,
+    QResizeEvent,
+)
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -37,20 +46,39 @@ from app.theme import (
     ghost_button_qss,
     link_button_qss,
 )
-from app.utils.files import pick_image_files, pick_image_folder, drop_has_accepted_files, dropped_local_paths
+from app.utils.files import (
+    drop_has_accepted_files,
+    dropped_local_paths,
+    pick_image_files,
+    pick_image_folder,
+)
 from app.utils.media import collect_images
 
 
 def pil_to_qpixmap(image: Image.Image) -> QPixmap:
     rgba = image.convert("RGBA")
     data = rgba.tobytes("raw", "RGBA")
-    qimage = QImage(data, rgba.width, rgba.height, QImage.Format.Format_RGBA8888)
+    qimage = QImage(
+        data, rgba.width, rgba.height, QImage.Format.Format_RGBA8888
+    )
     return QPixmap.fromImage(qimage.copy())
 
+
 PAN_GRADES = (3, 4, 5, 6)
-PAN_GRADE_COLORS = {3: WATER_LINE_COLOR, 4: SUCCESS_COLOR, 5: ACCENT_COLOR, 6: DANGER_COLOR}
-PAN_GRADE_TEXT_COLORS = {3: "#FFFFFF", 4: "#FFFFFF", 5: TEXT_INVERSE, 6: "#FFFFFF"}
+PAN_GRADE_COLORS = {
+    3: WATER_LINE_COLOR,
+    4: SUCCESS_COLOR,
+    5: ACCENT_COLOR,
+    6: DANGER_COLOR,
+}
+PAN_GRADE_TEXT_COLORS = {
+    3: "#FFFFFF",
+    4: "#FFFFFF",
+    5: TEXT_INVERSE,
+    6: "#FFFFFF",
+}
 RANGE_STD_MULTIPLIER = 2.0
+
 
 def _approx_output_range(mean: float, std: float) -> Tuple[float, float]:
     """Rough training min/max: mean +/- RANGE_STD_MULTIPLIER*std."""
@@ -61,7 +89,9 @@ def _approx_output_range(mean: float, std: float) -> Tuple[float, float]:
     return low, high
 
 
-def _closest_pan_grade(bitumen_value: float, bitumen_mean: float, bitumen_std: float) -> int:
+def _closest_pan_grade(
+    bitumen_value: float, bitumen_mean: float, bitumen_std: float
+) -> int:
     """Map predicted Bitumen into one of the four batch numbers (Pan 3–6).
 
     Labels store Pan as the batch id. There is no saved Bitumen→batch mapping,
@@ -77,14 +107,17 @@ def _closest_pan_grade(bitumen_value: float, bitumen_mean: float, bitumen_std: f
 
 
 class _GradingWorker(QObject):
-    """Run a loaded ``RegressionPredictor`` on one or more images off the UI thread.
+    """Run a loaded ``RegressionPredictor`` on one or more images off
+    the UI thread.
 
     The checkpoint is already loaded by ``MainWindow.set_active_model``; this
     just keeps inference off the main thread. Used for both "Grade This Image"
     and "Grade All".
     """
 
-    finished = pyqtSignal(list, int)  # [(image_id, result_or_None)], failure_count
+    finished = pyqtSignal(
+        list, int
+    )  # [(image_id, result_or_None)], failure_count
     failed = pyqtSignal(str)
     progress = pyqtSignal(int, int)  # done, total
 
@@ -101,7 +134,9 @@ class _GradingWorker(QObject):
         try:
             image_ids = [image_id for image_id, _source in self._images]
             sources = [source for _image_id, source in self._images]
-            predictions = self._predictor.predict_many(sources, on_progress=self.progress.emit)
+            predictions = self._predictor.predict_many(
+                sources, on_progress=self.progress.emit
+            )
         except Exception as exc:  # noqa: BLE001 - surface a single job error
             self.failed.emit(str(exc) or "Grading failed.")
             return
@@ -124,7 +159,9 @@ class _ExportWorker(QObject):
     finished = pyqtSignal()
     failed = pyqtSignal(str)
 
-    def __init__(self, save_path: str, header: List[str], rows: List[List[str]]):
+    def __init__(
+        self, save_path: str, header: List[str], rows: List[List[str]]
+    ):
         super().__init__()
         self._save_path = save_path
         self._header = header
@@ -132,7 +169,9 @@ class _ExportWorker(QObject):
 
     def run(self) -> None:
         try:
-            with open(self._save_path, "w", newline="", encoding="utf-8") as csv_file:
+            with open(
+                self._save_path, "w", newline="", encoding="utf-8"
+            ) as csv_file:
                 writer = csv.writer(csv_file)
                 writer.writerow(self._header)
                 writer.writerows(self._rows)
@@ -174,9 +213,12 @@ class _QueueItemWidget(QWidget):
         self._name_label = QLabel(_wrappable_filename(filename))
         self._name_label.setWordWrap(True)
         self._name_label.setToolTip(filename)
-        self._name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._name_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         self._name_label.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent; padding-right: 8px;"
+            f"color: {TEXT_PRIMARY}; font-size: 12px;"
+            f" background: transparent; padding-right: 8px;"
         )
         layout.addWidget(self._name_label, 1)
 
@@ -186,7 +228,12 @@ class _QueueItemWidget(QWidget):
     def heightForWidth(self, width: int) -> int:
         margins = self.layout().contentsMargins()
         inner = max(40, width - margins.left() - margins.right() - 8)
-        return self._name_label.heightForWidth(inner) + margins.top() + margins.bottom() + 4
+        return (
+            self._name_label.heightForWidth(inner)
+            + margins.top()
+            + margins.bottom()
+            + 4
+        )
 
     def sizeHint(self) -> QSize:
         width = 280
@@ -214,18 +261,23 @@ class _QueueList(QListWidget):
         self.setAcceptDrops(True)
         self.setWordWrap(True)
         self.setTextElideMode(Qt.TextElideMode.ElideNone)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setSpacing(0)
 
-    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: D401 - Qt override
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: D401
+        # Qt override
         super().resizeEvent(event)
         self.relayout_rows()
 
     def _usable_row_width(self) -> int:
         """Width the filename can occupy (overlay scrollbar + item chrome)."""
         width = self.viewport().width()
-        gutter = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        gutter = self.style().pixelMetric(
+            QStyle.PixelMetric.PM_ScrollBarExtent
+        )
         return max(40, width - gutter)
 
     def relayout_rows(self) -> None:
@@ -236,7 +288,9 @@ class _QueueList(QListWidget):
             widget = self.itemWidget(item)
             if item is None or widget is None:
                 continue
-            item.setSizeHint(QSize(width, max(36, widget.heightForWidth(width))))
+            item.setSizeHint(
+                QSize(width, max(36, widget.heightForWidth(width)))
+            )
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if drop_has_accepted_files(event, IMAGE_EXTENSIONS, recurse_dirs=True):
@@ -265,7 +319,9 @@ class _ImageDropZone(QFrame):
         super().__init__(parent)
         self.setObjectName("gradeDropZone")
         self.setAcceptDrops(True)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         self._build_ui()
         self._apply_style(active=False)
 
@@ -278,13 +334,18 @@ class _ImageDropZone(QFrame):
         title = QLabel("Drop photos or a folder here")
         title.setWordWrap(True)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;")
+        title.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 12px; background: transparent;"
+        )
         layout.addWidget(title)
 
         subtitle = QLabel("JPG, PNG, or TIF")
         subtitle.setWordWrap(True)
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        subtitle.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px;"
+            f" background: transparent;"
+        )
         layout.addWidget(subtitle)
 
         button_row = QHBoxLayout()
@@ -365,7 +426,9 @@ class _AdaptiveImageLabel(QLabel):
         self.setMinimumHeight(160)
 
     def set_source_image(self, pil_image: Optional[Image.Image]) -> None:
-        self._source_pixmap = pil_to_qpixmap(pil_image) if pil_image is not None else None
+        self._source_pixmap = (
+            pil_to_qpixmap(pil_image) if pil_image is not None else None
+        )
         self._rescale()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -387,7 +450,14 @@ class _AdaptiveImageLabel(QLabel):
 class _RangeBar(QWidget):
     """Training-range bar for one output; amber fill up to the prediction."""
 
-    def __init__(self, label: str, low: float, high: float, value: float, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        label: str,
+        low: float,
+        high: float,
+        value: float,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self._label = label
         self._low = low
@@ -395,7 +465,9 @@ class _RangeBar(QWidget):
         self._value = value
         self.setMinimumHeight(64)
         self.setMinimumWidth(200)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
 
     def paintEvent(self, event) -> None:  # noqa: D401 - Qt override
         painter = QPainter(self)
@@ -421,17 +493,25 @@ class _RangeBar(QWidget):
         )
 
         span = self._high - self._low
-        fraction = 0.0 if span <= 0 else max(0.0, min(1.0, (self._value - self._low) / span))
+        fraction = (
+            0.0
+            if span <= 0
+            else max(0.0, min(1.0, (self._value - self._low) / span))
+        )
         marker_x = track_left + fraction * track_width
 
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(BACKGROUND_COLOR))
-        painter.drawRoundedRect(QRectF(track_left, track_top, track_width, track_height), 4, 4)
+        painter.drawRoundedRect(
+            QRectF(track_left, track_top, track_width, track_height), 4, 4
+        )
 
         fill_width = marker_x - track_left
         if fill_width > 0:
             painter.setBrush(QColor(ACCENT_COLOR))
-            painter.drawRoundedRect(QRectF(track_left, track_top, fill_width, track_height), 4, 4)
+            painter.drawRoundedRect(
+                QRectF(track_left, track_top, fill_width, track_height), 4, 4
+            )
 
         marker_y = track_top + track_height / 2
         painter.setBrush(QColor(TEXT_PRIMARY))
@@ -444,8 +524,13 @@ class _RangeBar(QWidget):
         painter.setFont(font)
         painter.setPen(QColor(TEXT_PRIMARY))
         value_width = 56
-        value_x = min(max(marker_x - value_width / 2, track_left), track_right - value_width)
-        value_rect = QRectF(value_x, labels_top, value_width, bottom_label_height)
+        value_x = min(
+            max(marker_x - value_width / 2, track_left),
+            track_right - value_width,
+        )
+        value_rect = QRectF(
+            value_x, labels_top, value_width, bottom_label_height
+        )
         painter.drawText(value_rect, Qt.AlignmentFlag.AlignHCenter, value_text)
 
         font.setBold(False)
@@ -453,12 +538,18 @@ class _RangeBar(QWidget):
         painter.setFont(font)
         painter.setPen(QColor(TEXT_SECONDARY))
         min_rect = QRectF(track_left, labels_top, 60, bottom_label_height)
-        max_rect = QRectF(track_right - 60, labels_top, 60, bottom_label_height)
+        max_rect = QRectF(
+            track_right - 60, labels_top, 60, bottom_label_height
+        )
         overlap_pad = value_rect.adjusted(-6, 0, 6, 0)
         if not min_rect.intersects(overlap_pad):
-            painter.drawText(min_rect, Qt.AlignmentFlag.AlignLeft, f"{self._low:.2f}%")
+            painter.drawText(
+                min_rect, Qt.AlignmentFlag.AlignLeft, f"{self._low:.2f}%"
+            )
         if not max_rect.intersects(overlap_pad):
-            painter.drawText(max_rect, Qt.AlignmentFlag.AlignRight, f"{self._high:.2f}%")
+            painter.drawText(
+                max_rect, Qt.AlignmentFlag.AlignRight, f"{self._high:.2f}%"
+            )
 
         painter.end()
 
@@ -477,12 +568,20 @@ class _PanGradeCard(QFrame):
 
         self._title_label = QLabel("")
         self._title_label.setWordWrap(True)
-        self._title_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent;")
+        self._title_label.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 700;"
+            f" background: transparent;"
+        )
         layout.addWidget(self._title_label)
 
-        secondary_label = QLabel("Guessed from Bitumen vs. the training batches.")
+        secondary_label = QLabel(
+            "Guessed from Bitumen vs. the training batches."
+        )
         secondary_label.setWordWrap(True)
-        secondary_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        secondary_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px;"
+            f" background: transparent;"
+        )
         layout.addWidget(secondary_label)
 
     def _apply_frame_style(self, color: str) -> None:
@@ -490,12 +589,11 @@ class _PanGradeCard(QFrame):
         # bare "QFrame" selector would also draw this left-border stripe
         # around the nested title/secondary QLabels, not just the card.
         self.setStyleSheet(
-            f"QFrame#panGradeCard {{ background-color: {BACKGROUND_COLOR}; border-radius: 6px;"
+            f"QFrame#panGradeCard {{ background-color: {BACKGROUND_COLOR};"
+            f" border-radius: 6px;"
             f"border-left: 4px solid {color}; }}"
         )
 
     def set_grade(self, grade: int) -> None:
         self._title_label.setText(f"Closest batch: {grade}")
         self._apply_frame_style(PAN_GRADE_COLORS.get(grade, TEXT_SECONDARY))
-
-

@@ -1,4 +1,5 @@
 """Project directories used by more than one module."""
+
 from __future__ import annotations
 
 import os
@@ -9,6 +10,7 @@ APP_NAME = "BitumenGrader"
 
 
 def _is_frozen() -> bool:
+    """True when running as a PyInstaller bundle, not from source."""
     return bool(getattr(sys, "frozen", False))
 
 

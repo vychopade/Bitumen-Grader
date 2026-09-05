@@ -1,3 +1,5 @@
+"""Match labelled rows to images and split train/val/test sets."""
+
 import math
 import random
 import re
@@ -10,9 +12,14 @@ from torch.utils.data import Dataset
 from app.constants import IMAGE_EXTENSIONS
 from app.ml.recipe import CLS_BINS, TEST_FRACTION, VAL_FRACTION
 from app.utils.data_io import read_labels_file
+from app.utils.image_utils import (
+    IMAGE_SIZE,
+    build_eval_transforms,
+    build_train_transforms,
+    prepare_image,
+    standardize_to_model_size,
+)
 from app.utils.media import collect_images
-from app.utils.image_utils import IMAGE_SIZE, build_eval_transforms, build_train_transforms, prepare_image, standardize_to_model_size
-
 
 # Optional CSV columns used as an experiment/campaign id (Case 2 split).
 CAMPAIGN_COLUMN_CANDIDATES = ("Campaign", "Experiment", "Run")
@@ -30,7 +37,9 @@ def parse_campaign_id(filename: str, row=None) -> str:
     """
     if row is not None:
         for column in CAMPAIGN_COLUMN_CANDIDATES:
-            has_column = column in row.index if hasattr(row, "index") else column in row
+            has_column = (
+                column in row.index if hasattr(row, "index") else column in row
+            )
             if not has_column:
                 continue
             raw = row[column]
@@ -85,12 +94,22 @@ class RegressionDataset(Dataset):
         legacy_crop=False,
     ):
         if split not in {"train", "val", "test"}:
-            raise ValueError(f"split must be 'train', 'val', or 'test', got {split!r}")
-        if split_mode not in {"random", "experiment"}:
-            raise ValueError(f"split_mode must be 'random' or 'experiment', got {split_mode!r}")
-        if val_fraction < 0 or test_fraction < 0 or val_fraction + test_fraction >= 1.0:
             raise ValueError(
-                f"val_fraction ({val_fraction}) + test_fraction ({test_fraction}) "
+                f"split must be 'train', 'val', or 'test', got {split!r}"
+            )
+        if split_mode not in {"random", "experiment"}:
+            raise ValueError(
+                f"split_mode must be 'random' or 'experiment', got "
+                f"{split_mode!r}"
+            )
+        if (
+            val_fraction < 0
+            or test_fraction < 0
+            or val_fraction + test_fraction >= 1.0
+        ):
+            raise ValueError(
+                f"val_fraction ({val_fraction}) + test_fraction "
+                f"({test_fraction}) "
                 "must be >= 0 and leave room for a non-empty train split"
             )
 
@@ -108,9 +127,15 @@ class RegressionDataset(Dataset):
         self.split_campaigns = {"train": [], "val": [], "test": []}
 
         df = read_labels_file(csv_path)
-        missing_columns = [column for column in self.EXPECTED_COLUMNS if column not in df.columns]
+        missing_columns = [
+            column
+            for column in self.EXPECTED_COLUMNS
+            if column not in df.columns
+        ]
         if missing_columns:
-            raise ValueError(f"CSV is missing expected columns: {missing_columns}")
+            raise ValueError(
+                f"CSV is missing expected columns: {missing_columns}"
+            )
 
         by_name, by_stem = self._index_images(self.image_dir)
 
@@ -152,7 +177,9 @@ class RegressionDataset(Dataset):
                 pan = self._parse_pan(row["Pan"])
             except ValueError as exc:
                 # Bad cell (typo, blank, etc.) — skip this row, keep going.
-                self.invalid_rows.append({"image": image_value, "reason": str(exc)})
+                self.invalid_rows.append(
+                    {"image": image_value, "reason": str(exc)}
+                )
                 continue
 
             self.matched.append(
@@ -185,19 +212,30 @@ class RegressionDataset(Dataset):
 
         self.output_stats = {}
         self.bin_edges = {}
-        for key, label in (("water", "Water"), ("solids", "Solids"), ("bitumen", "Bitumen")):
+        for key, label in (
+            ("water", "Water"),
+            ("solids", "Solids"),
+            ("bitumen", "Bitumen"),
+        ):
             train_values = [item[key] for item in train_portion]
             mean, std = self._compute_mean_std(train_values)
             self.output_stats[label] = {"mean": mean, "std": std}
-            self.bin_edges[label] = self._equal_frequency_edges(train_values, CLS_BINS)
+            self.bin_edges[label] = self._equal_frequency_edges(
+                train_values, CLS_BINS
+            )
 
         self.train_transforms = build_train_transforms(self.image_size)
-        self.val_transforms = build_eval_transforms(self.image_size, legacy_crop=self.legacy_crop)
-        self.transforms = self.train_transforms if split == "train" else self.val_transforms
+        self.val_transforms = build_eval_transforms(
+            self.image_size, legacy_crop=self.legacy_crop
+        )
+        self.transforms = (
+            self.train_transforms if split == "train" else self.val_transforms
+        )
 
     @staticmethod
     def _index_images(image_dir: Path):
-        """Map CSV names (basename, relative path, or stem) to a path under ``image_dir``."""
+        """Map CSV names (basename, relative path, or stem) to a path under
+        ``image_dir``."""
         by_name = {}
         by_stem = {}
         for path_str in collect_images(image_dir):
@@ -211,9 +249,13 @@ class RegressionDataset(Dataset):
             by_stem[path.stem] = rel
         return by_name, by_stem
 
-    def _assign_splits(self, matched, val_fraction, test_fraction, seed, split_mode):
+    def _assign_splits(
+        self, matched, val_fraction, test_fraction, seed, split_mode
+    ):
         if split_mode == "experiment":
-            result = self._split_by_campaign(matched, val_fraction, test_fraction, seed)
+            result = self._split_by_campaign(
+                matched, val_fraction, test_fraction, seed
+            )
             if result is not None:
                 return result
         shuffled = list(matched)
@@ -230,7 +272,8 @@ class RegressionDataset(Dataset):
         return train_portion, val_portion, test_portion
 
     def _split_by_campaign(self, matched, val_fraction, test_fraction, seed):
-        """Hold out entire campaigns (paper Case 2). Falls back if < 2 campaigns."""
+        """Hold out entire campaigns (paper Case 2). Falls back if < 2
+        campaigns."""
         groups = defaultdict(list)
         for item in matched:
             groups[item["campaign"]].append(item)
@@ -238,7 +281,8 @@ class RegressionDataset(Dataset):
         campaign_ids = list(groups.keys())
         if len(campaign_ids) < 2:
             self.split_fallback_reason = (
-                "Only one flotation campaign was found, so a random image split was used instead."
+                "Only one flotation campaign was found, so a random "
+                "image split was used instead."
             )
             self.split_mode = "random"
             return None
@@ -310,17 +354,22 @@ class RegressionDataset(Dataset):
 
         test_portion = shuffled[total - test_count :] if test_count else []
         val_end = total - test_count
-        val_portion = shuffled[val_end - val_count : val_end] if val_count else []
+        val_portion = (
+            shuffled[val_end - val_count : val_end] if val_count else []
+        )
         train_portion = shuffled[: val_end - val_count]
         return train_portion, val_portion, test_portion
 
     @staticmethod
     def _parse_float(raw_value, column_name):
-        """Parse a numeric cell; raise ValueError with a clear message if not."""
+        """Parse a numeric cell; raise ValueError with a clear message if
+        not."""
         try:
             value = float(raw_value)
         except (TypeError, ValueError):
-            raise ValueError(f"{column_name}={raw_value!r} is not a valid number") from None
+            raise ValueError(
+                f"{column_name}={raw_value!r} is not a valid number"
+            ) from None
         if math.isnan(value):
             raise ValueError(f"{column_name} is missing/blank")
         return value
@@ -335,7 +384,9 @@ class RegressionDataset(Dataset):
         try:
             as_float = float(raw_value)
         except (TypeError, ValueError):
-            raise ValueError(f"Pan={raw_value!r} is not a valid whole number") from None
+            raise ValueError(
+                f"Pan={raw_value!r} is not a valid whole number"
+            ) from None
         if math.isnan(as_float):
             raise ValueError("Pan is missing/blank")
         return int(as_float)
@@ -347,7 +398,7 @@ class RegressionDataset(Dataset):
             return 0.0, 1.0
         mean = sum(values) / count
         variance = sum((value - mean) ** 2 for value in values) / count
-        std = variance ** 0.5
+        std = variance**0.5
         if std == 0:
             std = 1.0
         return mean, std
@@ -357,8 +408,13 @@ class RegressionDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        image = prepare_image(item["image_path"], self.image_size, square=not self.legacy_crop)
-        if not self.legacy_crop and image.size != (self.image_size, self.image_size):
+        image = prepare_image(
+            item["image_path"], self.image_size, square=not self.legacy_crop
+        )
+        if not self.legacy_crop and image.size != (
+            self.image_size,
+            self.image_size,
+        ):
             image = standardize_to_model_size(image, self.image_size)
         image_tensor = self.transforms(image)
         # Last-resort guard if a custom transform pipeline is swapped in later.
@@ -380,7 +436,8 @@ class RegressionDataset(Dataset):
 
     @staticmethod
     def _equal_frequency_edges(values, n_bins=CLS_BINS):
-        """Interior edges for equal-frequency bins, computed on train labels only."""
+        """Interior edges for equal-frequency bins, computed on train labels
+        only."""
         if n_bins < 2 or len(values) < n_bins:
             return []
         ordered = sorted(values)
@@ -401,7 +458,11 @@ class RegressionDataset(Dataset):
         return self.bin_edges
 
     def get_match_summary(self):
-        match_rate = len(self.matched) / self.total_csv_rows if self.total_csv_rows else 0.0
+        match_rate = (
+            len(self.matched) / self.total_csv_rows
+            if self.total_csv_rows
+            else 0.0
+        )
         return {
             "total_csv_rows": self.total_csv_rows,
             "matched": len(self.matched),

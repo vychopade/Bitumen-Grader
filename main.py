@@ -1,4 +1,5 @@
 """Start the BitumenGrader PyQt6 app."""
+
 from __future__ import annotations
 
 import sys
@@ -15,7 +16,7 @@ ORGANIZATION_NAME = "BitumenGrader"
 ORGANIZATION_DOMAIN = "bitumengrader.local"
 
 _STYLESHEET_PATH = ASSETS_DIR / "style.qss"
-
+#
 
 def _ensure_models_directory() -> None:
     """Make sure models/ exists so a fresh checkout can run."""
@@ -40,7 +41,7 @@ def _load_stylesheet() -> str:
     return text.replace("{ASSETS_DIR}", ASSETS_DIR.as_posix())
 
 
-def _install_exception_hook(app: QApplication) -> None:
+def _install_exception_hook() -> None:
     """Show unhandled errors in a dialog instead of silently dying.
 
     Still calls the previous hook afterward. App keeps running so one bad
@@ -57,19 +58,25 @@ def _install_exception_hook(app: QApplication) -> None:
             previous_hook(exc_type, exc_value, exc_traceback)
             return
 
-        details = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-        print(details, file=sys.stderr)
+        details = "".join(
+            traceback.format_exception(exc_type, exc_value, exc_traceback)
+        )
+        sys.stderr.write(details)
 
         try:
             box = QMessageBox()
             box.setIcon(QMessageBox.Icon.Critical)
             box.setWindowTitle(f"{APP_NAME} \u2014 Unexpected Error")
-            box.setText("An unexpected error occurred. You can continue using the app, but some state may be inconsistent.")
+            box.setText(
+                "An unexpected error occurred. You can continue using the "
+                "app, but some state may be inconsistent."
+            )
             box.setInformativeText(str(exc_value) or exc_type.__name__)
             box.setDetailedText(details)
             box.setStandardButtons(QMessageBox.StandardButton.Ok)
             box.exec()
-        except Exception:  # noqa: BLE001 - don't let the error handler crash too
+        except Exception:  # noqa: BLE001
+            # don't let the error handler crash too
             pass
 
     sys.excepthook = _handle_exception
@@ -87,7 +94,7 @@ def main() -> int:
     if stylesheet:
         app.setStyleSheet(stylesheet)
 
-    _install_exception_hook(app)
+    _install_exception_hook()
     _ensure_models_directory()
 
     # Import after QApplication exists (Qt startup order).

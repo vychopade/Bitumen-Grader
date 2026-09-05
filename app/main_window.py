@@ -5,6 +5,7 @@ Sidebar + stacked pages (Train, Grade, Models). Owns the app-wide
 ``active_model`` (path, metadata, ready ``RegressionPredictor``) and
 broadcasts ``active_model_changed`` when it changes.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -44,7 +45,13 @@ WINDOW_TITLE_BASE = "BitumenGrader"
 
 _LOGO_PATH = ASSETS_DIR / "logo.png"
 
-_FALLBACK_FONT_FAMILIES = ("Segoe UI", "Helvetica Neue", ".AppleSystemUIFont", "Arial", "Ubuntu")
+_FALLBACK_FONT_FAMILIES = (
+    "Segoe UI",
+    "Helvetica Neue",
+    ".AppleSystemUIFont",
+    "Arial",
+    "Ubuntu",
+)
 
 #: (key, label, page class) for each sidebar item.
 _NAV_ITEMS = [
@@ -58,7 +65,8 @@ NAV_SHORTCUT_LETTERS = {"train": "T", "grade": "G", "models": "M"}
 
 
 def _resolve_font_family() -> str:
-    """Use a common system sans-serif. Skip Inter — it reads as a product site."""
+    """Use a common system sans-serif. Skip Inter — it reads as a product
+    site."""
     families = set(QFontDatabase.families())
     for fallback in _FALLBACK_FONT_FAMILIES:
         if fallback in families:
@@ -105,14 +113,18 @@ class _Sidebar(QWidget):
         self._status_button.clicked.connect(self.models_requested.emit)
         layout.addWidget(self._status_button)
 
-    def _build_nav_button(self, label: str, index: int, key: str) -> QPushButton:
+    def _build_nav_button(
+        self, label: str, index: int, key: str
+    ) -> QPushButton:
         button = QPushButton(label)
         button.setObjectName("navItem")
         button.setCheckable(True)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFixedHeight(36)
         button.setFont(QFont(self._font_family, 13))
-        button.clicked.connect(lambda _checked, i=index: self._on_nav_clicked(i))
+        button.clicked.connect(
+            lambda _checked, i=index: self._on_nav_clicked(i)
+        )
 
         shortcut_letter = NAV_SHORTCUT_LETTERS.get(key)
         if shortcut_letter:
@@ -130,13 +142,17 @@ class _Sidebar(QWidget):
         if 0 <= index < len(self._nav_buttons):
             self._nav_buttons[index].setChecked(True)
 
-    def set_active_model_label(self, display_name: Optional[str], r2_headline: str = "") -> None:
+    def set_active_model_label(
+        self, display_name: Optional[str], r2_headline: str = ""
+    ) -> None:
         """Show the loaded model name, or 'No model'."""
         if self._status_button is None:
             return
         if display_name:
             metrics = QFontMetrics(self._status_button.font())
-            elided = metrics.elidedText(display_name, Qt.TextElideMode.ElideRight, SIDEBAR_WIDTH - 28)
+            elided = metrics.elidedText(
+                display_name, Qt.TextElideMode.ElideRight, SIDEBAR_WIDTH - 28
+            )
             self._status_button.setText(elided)
             tooltip = f"{display_name} — click to change"
             if r2_headline:
@@ -172,7 +188,9 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         self._sidebar = _Sidebar(self._font_family)
         self._sidebar.nav_selected.connect(self._on_nav_selected)
-        self._sidebar.models_requested.connect(lambda: self.navigate_to("models"))
+        self._sidebar.models_requested.connect(
+            lambda: self.navigate_to("models")
+        )
 
         self._build_layout()
         self._update_window_title()
@@ -242,11 +260,16 @@ class MainWindow(QMainWindow):
             return None
         return self._pages[index]
 
-    def set_active_model(self, model_path: Optional[str], metadata: Optional[Dict[str, Any]] = None) -> None:
+    def set_active_model(
+        self,
+        model_path: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Set or clear the active model; update sidebar + pages.
 
         Loads the checkpoint into a ``RegressionPredictor`` up front so Grade
-        and Models can rely on ``active_model`` already having a usable predictor.
+        and Models can rely on ``active_model`` already having a usable
+        predictor.
 
         Args:
             model_path: Path to the ``.pt`` file, or ``None`` to clear.
@@ -264,17 +287,28 @@ class MainWindow(QMainWindow):
         metadata = metadata or {}
         try:
             predictor = RegressionPredictor(model_path, metadata)
-        except Exception as exc:  # noqa: BLE001 - surface any load failure to the user
+        except Exception as exc:  # noqa: BLE001
+            # surface any load failure to the user
             QMessageBox.critical(
                 self,
                 "Model Load Failed",
-                f"Couldn't load \u201c{metadata.get('name') or Path(model_path).stem}\u201d:\n{exc}",
+                (
+                    "Couldn't load \u201c"
+                    f"{metadata.get('name') or Path(model_path).stem}"
+                    f"\u201d:\n{exc}"
+                ),
             )
             return
 
-        self.active_model = {"path": model_path, "metadata": metadata, "predictor": predictor}
+        self.active_model = {
+            "path": model_path,
+            "metadata": metadata,
+            "predictor": predictor,
+        }
         display_name = metadata.get("name") or Path(model_path).stem
-        self._sidebar.set_active_model_label(display_name, format_r2_headline(metadata))
+        self._sidebar.set_active_model_label(
+            display_name, format_r2_headline(metadata)
+        )
 
         self._update_window_title()
         self.active_model_changed.emit(self.active_model)
@@ -283,7 +317,10 @@ class MainWindow(QMainWindow):
         """Window title includes the active model name, if any."""
         if self.active_model:
             metadata = self.active_model.get("metadata") or {}
-            name = metadata.get("name") or Path(self.active_model.get("path", "")).stem
+            name = (
+                metadata.get("name")
+                or Path(self.active_model.get("path", "")).stem
+            )
             self.setWindowTitle(f"{WINDOW_TITLE_BASE} \u2014 {name}")
         else:
             self.setWindowTitle(f"{WINDOW_TITLE_BASE} \u2014 No Model Loaded")

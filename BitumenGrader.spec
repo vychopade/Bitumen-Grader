@@ -3,7 +3,7 @@
 
 From the repo root:
 
-    pip install -r requirements-dev.txt
+    pip install pyinstaller
     pyinstaller BitumenGrader.spec
 
 Output: dist/BitumenGrader/ (and BitumenGrader.app on macOS).

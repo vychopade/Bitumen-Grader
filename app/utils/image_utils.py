@@ -1,4 +1,5 @@
 """Shared image resize / normalize helpers for train and inference."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,7 +11,8 @@ from torchvision.transforms import InterpolationMode
 
 from app.ml.recipe import IMAGE_SIZE
 
-# 256×256×3 for new models (paper Table 2). Legacy ResNet-18 checkpoints used 224.
+# 256×256×3 for new models (paper Table 2). Legacy ResNet-18 checkpoints used
+# 224.
 LEGACY_IMAGE_SIZE = 224
 _INTERPOLATION = InterpolationMode.BILINEAR
 
@@ -50,7 +52,9 @@ def load_rgb_image(
     with Image.open(source) as opened:
         if max_decode_edge and max_decode_edge > 0:
             try:
-                opened.draft("RGB", (int(max_decode_edge), int(max_decode_edge)))
+                opened.draft(
+                    "RGB", (int(max_decode_edge), int(max_decode_edge))
+                )
             except (OSError, ValueError, SyntaxError):
                 pass
         opened.load()
@@ -76,7 +80,9 @@ def cap_long_edge(image: Image.Image, max_edge: int) -> Image.Image:
     return image.resize(new_size, Image.Resampling.BILINEAR)
 
 
-def standardize_to_model_size(image: Image.Image, image_size: int = IMAGE_SIZE) -> Image.Image:
+def standardize_to_model_size(
+    image: Image.Image, image_size: int = IMAGE_SIZE
+) -> Image.Image:
     """RGB square of ``image_size``×``image_size`` (paper Table 2).
 
     Phone, crop, and thumbnail photos all become the same canvas before
@@ -112,7 +118,9 @@ def prepare_image(
 
 def _square_resize(image_size: int) -> transforms.Resize:
     """Force every photo to the model's square input, any source resolution."""
-    return transforms.Resize((image_size, image_size), interpolation=_INTERPOLATION)
+    return transforms.Resize(
+        (image_size, image_size), interpolation=_INTERPOLATION
+    )
 
 
 def build_train_transforms(image_size: int = IMAGE_SIZE) -> transforms.Compose:
@@ -132,10 +140,13 @@ def build_train_transforms(image_size: int = IMAGE_SIZE) -> transforms.Compose:
     )
 
 
-def build_eval_transforms(image_size: int = IMAGE_SIZE, *, legacy_crop: bool = False) -> transforms.Compose:
+def build_eval_transforms(
+    image_size: int = IMAGE_SIZE, *, legacy_crop: bool = False
+) -> transforms.Compose:
     """Validation / inference transforms.
 
-    New models resize to ``image_size`` × ``image_size`` (same square as training).
+    New models resize to ``image_size`` × ``image_size`` (same square as
+    training).
     Legacy ResNet-18 checkpoints used Resize(256) + CenterCrop(224).
     """
     if legacy_crop:

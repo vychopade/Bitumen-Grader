@@ -1,10 +1,11 @@
 """Save/load trained models and their metadata JSON."""
+
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import torch.nn as nn
 
@@ -28,7 +29,8 @@ def save_model(
     save_dir: Union[str, Path],
     extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Path]:
-    """Write ``{name}_{timestamp}.pt`` and a matching ``.json`` into ``save_dir``.
+    """Write ``{name}_{timestamp}.pt`` and a matching ``.json`` into
+    ``save_dir``.
 
     Returns ``{"model_path": ..., "metadata_path": ...}``.
     """
@@ -36,7 +38,9 @@ def save_model(
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise OSError(f"Could not create model save directory '{save_dir}': {exc}") from exc
+        raise OSError(
+            f"Could not create model save directory '{save_dir}': {exc}"
+        ) from exc
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     model_path = save_dir / f"{name}_{timestamp}.pt"
@@ -45,7 +49,9 @@ def save_model(
     try:
         model.save(model_path)
     except OSError as exc:
-        raise OSError(f"Could not save model weights to '{model_path}': {exc}") from exc
+        raise OSError(
+            f"Could not save model weights to '{model_path}': {exc}"
+        ) from exc
 
     metadata = {
         "name": name,
@@ -78,7 +84,9 @@ def save_model(
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
     except OSError as exc:
-        raise OSError(f"Could not save model metadata to '{metadata_path}': {exc}") from exc
+        raise OSError(
+            f"Could not save model metadata to '{metadata_path}': {exc}"
+        ) from exc
 
     return {"model_path": model_path, "metadata_path": metadata_path}
 
@@ -90,9 +98,13 @@ def load_model_metadata(json_path: Union[str, Path]) -> Dict[str, Any]:
         with open(json_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except OSError as exc:
-        raise OSError(f"Could not read model metadata file '{json_path}': {exc}") from exc
+        raise OSError(
+            f"Could not read model metadata file '{json_path}': {exc}"
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Model metadata file '{json_path}' is not valid JSON: {exc}") from exc
+        raise ValueError(
+            f"Model metadata file '{json_path}' is not valid JSON: {exc}"
+        ) from exc
 
 
 def load_model(json_path: Union[str, Path]) -> RegressionPredictor:
@@ -106,13 +118,16 @@ def load_model(json_path: Union[str, Path]) -> RegressionPredictor:
     model_path = json_path.with_suffix(".pt")
     if not model_path.exists():
         raise FileNotFoundError(
-            f"Model weights file '{model_path}' was not found alongside metadata '{json_path}'"
+            f"Model weights file '{model_path}' was not found alongside "
+            f"metadata '{json_path}'"
         )
 
     try:
         return RegressionPredictor(model_path, metadata)
     except Exception as exc:
-        raise RuntimeError(f"Could not load model from '{model_path}': {exc}") from exc
+        raise RuntimeError(
+            f"Could not load model from '{model_path}': {exc}"
+        ) from exc
 
 
 def list_saved_models(save_dir: Union[str, Path]) -> List[Dict[str, Any]]:
@@ -124,7 +139,9 @@ def list_saved_models(save_dir: Union[str, Path]) -> List[Dict[str, Any]]:
     try:
         json_paths = sorted(save_dir.glob("*.json"))
     except OSError as exc:
-        raise OSError(f"Could not scan model directory '{save_dir}': {exc}") from exc
+        raise OSError(
+            f"Could not scan model directory '{save_dir}': {exc}"
+        ) from exc
 
     entries: List[Dict[str, Any]] = []
     for json_path in json_paths:
@@ -141,7 +158,9 @@ def list_saved_models(save_dir: Union[str, Path]) -> List[Dict[str, Any]]:
     return entries
 
 
-def format_created_at(created_at: Optional[str], fmt: str = "%b %d, %Y") -> str:
+def format_created_at(
+    created_at: Optional[str], fmt: str = "%b %d, %Y"
+) -> str:
     """Format a model metadata ISO timestamp, or '' if missing/invalid."""
     if not created_at:
         return ""
@@ -162,16 +181,24 @@ def _complete_r2(scores: Any) -> Optional[Dict[str, float]]:
 
 
 def mean_r2(scores: Dict[str, float]) -> float:
-    """Mean of Water / Solids / Bitumen R² — same figure used to pick checkpoints."""
-    return sum(float(scores[name]) for name in OUTPUT_NAMES) / len(OUTPUT_NAMES)
+    """Mean of Water / Solids / Bitumen R² — same figure used to pick
+    checkpoints."""
+    return sum(float(scores[name]) for name in OUTPUT_NAMES) / len(
+        OUTPUT_NAMES
+    )
 
 
-def _best_r2_from_history(history: List[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+def _best_r2_from_history(
+    history: List[Dict[str, Any]],
+) -> Optional[Dict[str, float]]:
     best_scores: Optional[Dict[str, float]] = None
     best_mean = float("-inf")
     for entry in history or []:
         try:
-            scores = {name: float(entry[key]) for name, key in _R2_HISTORY_KEYS.items()}
+            scores = {
+                name: float(entry[key])
+                for name, key in _R2_HISTORY_KEYS.items()
+            }
         except (KeyError, TypeError, ValueError):
             continue
         current_mean = mean_r2(scores)
@@ -181,7 +208,9 @@ def _best_r2_from_history(history: List[Dict[str, Any]]) -> Optional[Dict[str, f
     return best_scores
 
 
-def model_r2_splits(metadata: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+def model_r2_splits(
+    metadata: Optional[Dict[str, Any]],
+) -> Dict[str, Dict[str, float]]:
     """Validation and test R² dicts when they were recorded.
 
     ``val`` comes from ``best_val_r2``, or the best-mean epoch in

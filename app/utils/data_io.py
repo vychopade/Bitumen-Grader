@@ -1,4 +1,5 @@
 """Load training labels from CSV/txt or Excel."""
+
 from __future__ import annotations
 
 from pathlib import Path

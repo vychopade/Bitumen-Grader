@@ -1,4 +1,5 @@
 """Find photos on disk. No Qt — used by the dataset and the file dialogs."""
+
 from __future__ import annotations
 
 from pathlib import Path

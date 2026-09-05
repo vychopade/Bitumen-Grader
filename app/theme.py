@@ -3,6 +3,7 @@
 Aim for a working lab tool, not a product landing page: small radii, hairline
 borders, and one accent action per screen.
 """
+
 from __future__ import annotations
 
 from app.constants import SUM_DEVIATION_OK, SUM_DEVIATION_TIGHT
@@ -48,12 +49,14 @@ PAGE_SPACING = 12
 
 def accent_button_qss() -> str:
     return (
-        f"QPushButton {{ background-color: {ACCENT_COLOR}; color: {TEXT_INVERSE};"
+        f"QPushButton {{ background-color: {ACCENT_COLOR};"
+        f" color: {TEXT_INVERSE};"
         f"border: 1px solid {ACCENT_COLOR}; border-radius: {RADIUS_SM}px;"
         f"padding: 6px 12px; min-height: 24px; }}"
         f"QPushButton:hover {{ background-color: {ACCENT_HOVER_COLOR}; }}"
         f"QPushButton:pressed {{ background-color: {ACCENT_PRESSED_COLOR}; }}"
-        f"QPushButton:disabled {{ background-color: {ACCENT_DISABLED_BG}; color: {ACCENT_DISABLED_FG};"
+        f"QPushButton:disabled {{ background-color: {ACCENT_DISABLED_BG};"
+        f" color: {ACCENT_DISABLED_FG};"
         f"border: 1px solid {ACCENT_DISABLED_BG}; }}"
         f"QPushButton:focus {{ outline: none; }}"
     )
@@ -66,7 +69,8 @@ def ghost_button_qss() -> str:
         f"padding: 6px 12px; min-height: 24px; }}"
         f"QPushButton:hover {{ background-color: {SURFACE_HOVER_COLOR}; }}"
         f"QPushButton:pressed {{ background-color: {NAV_HOVER_COLOR}; }}"
-        f"QPushButton:disabled {{ color: {TEXT_SECONDARY}; border: 1px solid {SEPARATOR_COLOR}; }}"
+        f"QPushButton:disabled {{ color: {TEXT_SECONDARY};"
+        f" border: 1px solid {SEPARATOR_COLOR}; }}"
         f"QPushButton:focus {{ outline: none; }}"
     )
 
@@ -78,7 +82,8 @@ def danger_outline_button_qss() -> str:
         f"padding: 6px 12px; min-height: 24px; }}"
         f"QPushButton:hover {{ background-color: {DANGER_HOVER_BG}; }}"
         f"QPushButton:pressed {{ background-color: {DANGER_HOVER_BG}; }}"
-        f"QPushButton:disabled {{ color: {DANGER_DISABLED_FG}; border: 1px solid {DANGER_DISABLED_BORDER}; }}"
+        f"QPushButton:disabled {{ color: {DANGER_DISABLED_FG};"
+        f" border: 1px solid {DANGER_DISABLED_BORDER}; }}"
         f"QPushButton:focus {{ outline: none; }}"
     )
 
@@ -86,8 +91,10 @@ def danger_outline_button_qss() -> str:
 def link_button_qss(*, color: str = TEXT_SECONDARY) -> str:
     """Plain text control — used instead of a second outlined button."""
     return (
-        f"QPushButton {{ background: transparent; color: {color}; border: none;"
-        f"padding: 4px 2px; text-align: left; font-size: 12px; min-height: 20px; }}"
+        f"QPushButton {{ background: transparent; color: {color};"
+        f" border: none;"
+        f"padding: 4px 2px; text-align: left; font-size: 12px;"
+        f" min-height: 20px; }}"
         f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
         f"QPushButton:disabled {{ color: {SEPARATOR_COLOR}; }}"
         f"QPushButton:focus {{ outline: none; }}"
@@ -103,7 +110,8 @@ def drop_zone_qss(object_name: str, *, active: bool) -> str:
     border = ACCENT_COLOR if active else BORDER_COLOR
     background = SURFACE_COLOR if active else "transparent"
     return (
-        f"QFrame#{object_name} {{ background-color: {background}; border: 1px dashed {border};"
+        f"QFrame#{object_name} {{ background-color: {background};"
+        f" border: 1px dashed {border};"
         f"border-radius: {RADIUS_SM}px; }}"
         f"{LABEL_RESET_QSS}"
     )
@@ -112,7 +120,8 @@ def drop_zone_qss(object_name: str, *, active: bool) -> str:
 def card_qss(*, inset: bool = False) -> str:
     fill = BACKGROUND_COLOR if inset else SURFACE_COLOR
     return (
-        f"QFrame {{ background-color: {fill}; border: 1px solid {BORDER_COLOR};"
+        f"QFrame {{ background-color: {fill};"
+        f" border: 1px solid {BORDER_COLOR};"
         f"border-radius: {RADIUS_SM}px; }}"
         f"{LABEL_RESET_QSS}"
     )

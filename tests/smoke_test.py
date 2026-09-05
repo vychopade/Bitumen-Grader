@@ -1,7 +1,8 @@
 """Quick offline checks for the ML backend (no PyQt).
 
-    python -m pytest tests/smoke_test.py -v
+python -m pytest tests/smoke_test.py -v
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,7 +31,9 @@ _DUMMY_OUTPUT_STATS = {
 }
 
 
-def _make_dummy_result(output_stats=None, normalise_targets: bool = False) -> RegressionTrainingResult:
+def _make_dummy_result(
+    output_stats=None, normalise_targets: bool = False
+) -> RegressionTrainingResult:
     """Minimal RegressionTrainingResult for save_model tests."""
     return RegressionTrainingResult(
         best_val_loss=0.01,
@@ -68,7 +71,9 @@ def _write_tiny_dataset(tmp_path: Path, count: int = 20):
     image_dir.mkdir()
     filenames = [f"sample_{index}.jpg" for index in range(count)]
     for filename in filenames:
-        Image.new("RGB", (64, 64), color=(200, 200, 200)).save(image_dir / filename)
+        Image.new("RGB", (64, 64), color=(200, 200, 200)).save(
+            image_dir / filename
+        )
     rows = [
         {
             "Image": filename,
@@ -98,7 +103,8 @@ def test_bitumen_regressor_forward_pass_shape() -> None:
 
 
 def test_bitumen_regressor_from_scratch_flag() -> None:
-    """Default architecture is the compact baseline, not an ImageNet backbone."""
+    """Default architecture is the compact baseline, not an ImageNet
+    backbone."""
     model = BitumenRegressor(pretrained=False)
     assert model.architecture == "baseline"
     with torch.no_grad():
@@ -108,8 +114,12 @@ def test_bitumen_regressor_from_scratch_flag() -> None:
 
 def test_resnet50_and_vgg16_c2_heads() -> None:
     """Transfer variants keep a 3-d output; C2 is a 2-layer head."""
-    resnet = BitumenRegressor(architecture="resnet50", pretrained=False, head="c2")
-    vgg = BitumenRegressor(architecture="vgg16", pretrained=False, head="native")
+    resnet = BitumenRegressor(
+        architecture="resnet50", pretrained=False, head="c2"
+    )
+    vgg = BitumenRegressor(
+        architecture="vgg16", pretrained=False, head="native"
+    )
     dummy = torch.rand(1, 3, 256, 256)
     with torch.no_grad():
         assert resnet(dummy).shape == (1, 3)
@@ -122,10 +132,17 @@ def test_resnet50_and_vgg16_c2_heads() -> None:
 def test_backbone_freeze_helpers() -> None:
     model = BitumenRegressor(pretrained=False)
     model.freeze_backbone()
-    assert all(not parameter.requires_grad for parameter in model.backbone_parameters())
-    assert all(parameter.requires_grad for parameter in model.head_parameters())
+    assert all(
+        not parameter.requires_grad
+        for parameter in model.backbone_parameters()
+    )
+    assert all(
+        parameter.requires_grad for parameter in model.head_parameters()
+    )
     model.unfreeze_backbone()
-    assert all(parameter.requires_grad for parameter in model.backbone_parameters())
+    assert all(
+        parameter.requires_grad for parameter in model.backbone_parameters()
+    )
 
 
 def test_init_output_bias_predicts_train_means() -> None:
@@ -162,12 +179,21 @@ def test_predictor_round_trip(tmp_path: Path) -> None:
     blank_image = Image.new("RGB", (224, 224), color=(255, 255, 255))
     prediction = predictor.predict(blank_image)
 
-    assert set(prediction.keys()) == {"Water", "Solids", "Bitumen", "sum", "sum_deviation", "sum_ok"}
+    assert set(prediction.keys()) == {
+        "Water",
+        "Solids",
+        "Bitumen",
+        "sum",
+        "sum_deviation",
+        "sum_ok",
+    }
     for label in ("Water", "Solids", "Bitumen"):
         assert isinstance(prediction[label]["value"], float)
 
 
-def test_predictor_skips_denorm_when_targets_not_normalised(tmp_path: Path) -> None:
+def test_predictor_skips_denorm_when_targets_not_normalised(
+    tmp_path: Path,
+) -> None:
     """If normalise_targets is False, treat raw outputs as percentages."""
     model = BitumenRegressor(pretrained=False)
     result = _make_dummy_result(normalise_targets=False)
@@ -194,7 +220,9 @@ def test_predictor_skips_denorm_when_targets_not_normalised(tmp_path: Path) -> N
             return torch.tensor([[10.0, 20.0, 70.0]])
 
     predictor.model = _FixedModel()
-    prediction = predictor.predict(Image.new("RGB", (224, 224), color=(0, 0, 0)))
+    prediction = predictor.predict(
+        Image.new("RGB", (224, 224), color=(0, 0, 0))
+    )
 
     assert prediction["Water"]["value"] == 10.0
     assert prediction["Solids"]["value"] == 20.0
@@ -202,7 +230,8 @@ def test_predictor_skips_denorm_when_targets_not_normalised(tmp_path: Path) -> N
 
 
 def test_predict_many_batches_and_skips_bad_files(tmp_path: Path) -> None:
-    """Grade All should batch inference and keep going if one file is unreadable."""
+    """Grade All should batch inference and keep going if one file is
+    unreadable."""
     model = BitumenRegressor(pretrained=False)
     result = _make_dummy_result(normalise_targets=False)
     paths = save_model(
@@ -226,7 +255,10 @@ def test_predict_many_batches_and_skips_bad_files(tmp_path: Path) -> None:
             return torch.tensor([[10.0, 20.0, 70.0]]).expand(count, 3).clone()
 
     predictor.model = _FixedModel()
-    images = [Image.new("RGB", (256, 256), color=(index, index, index)) for index in range(5)]
+    images = [
+        Image.new("RGB", (256, 256), color=(index, index, index))
+        for index in range(5)
+    ]
     progress = []
     graded = predictor.predict_many(
         images + [tmp_path / "missing.jpg"],
@@ -235,7 +267,10 @@ def test_predict_many_batches_and_skips_bad_files(tmp_path: Path) -> None:
     )
 
     assert len(graded) == 6
-    assert all(item is not None and item["Bitumen"]["value"] == 70.0 for item in graded[:5])
+    assert all(
+        item is not None and item["Bitumen"]["value"] == 70.0
+        for item in graded[:5]
+    )
     assert graded[5] is None
     assert progress[0] == (0, 6)
     assert progress[-1] == (6, 6)
@@ -291,7 +326,12 @@ def test_regression_dataset_filename_matching(tmp_path: Path) -> None:
     csv_path, image_dir = _write_tiny_dataset(tmp_path, count=5)
 
     dataset = RegressionDataset(
-        str(csv_path), str(image_dir), split="train", val_fraction=0.2, test_fraction=0.2, seed=42
+        str(csv_path),
+        str(image_dir),
+        split="train",
+        val_fraction=0.2,
+        test_fraction=0.2,
+        seed=42,
     )
 
     match_summary = dataset.get_match_summary()
@@ -300,30 +340,52 @@ def test_regression_dataset_filename_matching(tmp_path: Path) -> None:
     output_stats = dataset.get_output_stats()
     assert set(output_stats.keys()) == {"Water", "Solids", "Bitumen"}
 
-    crop_names = [type(step).__name__ for step in dataset.train_transforms.transforms]
+    crop_names = [
+        type(step).__name__ for step in dataset.train_transforms.transforms
+    ]
     assert "RandomResizedCrop" not in crop_names
     assert "ColorJitter" not in crop_names
     assert "RandomHorizontalFlip" in crop_names
     resize = dataset.train_transforms.transforms[0]
-    assert getattr(resize, "size", None) == (256, 256) or getattr(resize, "size", None) == 256
+    assert (
+        getattr(resize, "size", None) == (256, 256)
+        or getattr(resize, "size", None) == 256
+    )
 
     tensor, _target = dataset[0]
     assert tuple(tensor.shape) == (3, 256, 256)
 
 
 def test_dataset_matches_images_in_nested_folders(tmp_path: Path) -> None:
-    """Labels can name a file that lives in a subfolder of the photo directory."""
+    """Labels can name a file that lives in a subfolder of the photo
+    directory."""
     from app.utils.media import collect_images
 
     nested = tmp_path / "photos" / "run_a"
     nested.mkdir(parents=True)
-    Image.new("RGB", (32, 32), color=(10, 20, 30)).save(nested / "sample_0.jpg")
-    Image.new("RGB", (32, 32), color=(40, 50, 60)).save(nested / "sample_1.jpg")
+    Image.new("RGB", (32, 32), color=(10, 20, 30)).save(
+        nested / "sample_0.jpg"
+    )
+    Image.new("RGB", (32, 32), color=(40, 50, 60)).save(
+        nested / "sample_1.jpg"
+    )
     csv_path = tmp_path / "labels.csv"
     pd.DataFrame(
         [
-            {"Image": "sample_0.jpg", "Pan": 3, "Water": 10.0, "Solids": 20.0, "Bitumen": 70.0},
-            {"Image": "sample_1", "Pan": 4, "Water": 11.0, "Solids": 21.0, "Bitumen": 68.0},
+            {
+                "Image": "sample_0.jpg",
+                "Pan": 3,
+                "Water": 10.0,
+                "Solids": 20.0,
+                "Bitumen": 70.0,
+            },
+            {
+                "Image": "sample_1",
+                "Pan": 4,
+                "Water": 11.0,
+                "Solids": 21.0,
+                "Bitumen": 68.0,
+            },
         ]
     ).to_csv(csv_path, index=False)
 
@@ -331,7 +393,12 @@ def test_dataset_matches_images_in_nested_folders(tmp_path: Path) -> None:
     assert len(found) == 2
 
     dataset = RegressionDataset(
-        str(csv_path), str(tmp_path / "photos"), split="train", val_fraction=0.0, test_fraction=0.0, seed=42
+        str(csv_path),
+        str(tmp_path / "photos"),
+        split="train",
+        val_fraction=0.0,
+        test_fraction=0.0,
+        seed=42,
     )
     assert dataset.get_match_summary()["matched"] == 2
     assert dataset.get_match_summary()["unmatched"] == 0
@@ -339,7 +406,13 @@ def test_dataset_matches_images_in_nested_folders(tmp_path: Path) -> None:
 
 def test_regression_dataset_train_val_test_split(tmp_path: Path) -> None:
     csv_path, image_dir = _write_tiny_dataset(tmp_path, count=20)
-    kwargs = dict(csv_path=str(csv_path), image_dir=str(image_dir), val_fraction=0.2, test_fraction=0.15, seed=42)
+    kwargs = dict(
+        csv_path=str(csv_path),
+        image_dir=str(image_dir),
+        val_fraction=0.2,
+        test_fraction=0.15,
+        seed=42,
+    )
     train = RegressionDataset(split="train", **kwargs)
     val = RegressionDataset(split="val", **kwargs)
     test = RegressionDataset(split="test", **kwargs)
@@ -355,9 +428,15 @@ def test_regression_dataset_train_val_test_split(tmp_path: Path) -> None:
     assert val_paths.isdisjoint(test_paths)
 
 
-def test_mixed_source_resolutions_standardize_to_model_size(tmp_path: Path) -> None:
+def test_mixed_source_resolutions_standardize_to_model_size(
+    tmp_path: Path,
+) -> None:
     """Phone, crop, and thumbnail photos all become 3×256×256 tensors."""
-    from app.utils.image_utils import build_eval_transforms, cap_long_edge, prepare_image
+    from app.utils.image_utils import (
+        build_eval_transforms,
+        cap_long_edge,
+        prepare_image,
+    )
 
     image_dir = tmp_path / "images"
     image_dir.mkdir()
@@ -393,7 +472,9 @@ def test_mixed_source_resolutions_standardize_to_model_size(tmp_path: Path) -> N
 
     eval_transform = build_eval_transforms(256)
     for size in sizes:
-        prepared = prepare_image(Image.new("RGB", size, color=(10, 20, 30)), image_size=256)
+        prepared = prepare_image(
+            Image.new("RGB", size, color=(10, 20, 30)), image_size=256
+        )
         assert prepared.size == (256, 256)
         tensor = eval_transform(prepared)
         assert tuple(tensor.shape) == (3, 256, 256)
@@ -405,7 +486,9 @@ def test_mixed_source_resolutions_standardize_to_model_size(tmp_path: Path) -> N
     from app.utils.image_utils import standardize_to_model_size
 
     for size in sizes:
-        squared = standardize_to_model_size(Image.new("RGB", size, color=(1, 2, 3)), 256)
+        squared = standardize_to_model_size(
+            Image.new("RGB", size, color=(1, 2, 3)), 256
+        )
         assert squared.size == (256, 256)
         assert squared.mode == "RGB"
 
@@ -487,7 +570,11 @@ def test_save_model_and_list_saved_models_round_trip(tmp_path: Path) -> None:
     metadata = saved_models[0]
     assert metadata["model_type"] == "regression"
     assert metadata["output_names"] == ["Water", "Solids", "Bitumen"]
-    assert set(metadata["best_val_mae"].keys()) == {"Water", "Solids", "Bitumen"}
+    assert set(metadata["best_val_mae"].keys()) == {
+        "Water",
+        "Solids",
+        "Bitumen",
+    }
     assert metadata["normalise_targets"] is False
     assert metadata["test_loss"] == 0.02
     assert metadata["architecture"] == "baseline"
@@ -500,7 +587,9 @@ def test_save_model_and_list_saved_models_round_trip(tmp_path: Path) -> None:
 def test_resolve_model_r2_prefers_test_then_history() -> None:
     test_scores = {"Water": 0.48, "Solids": 0.52, "Bitumen": 0.66}
     val_scores = {"Water": 0.50, "Solids": 0.55, "Bitumen": 0.70}
-    resolved = resolve_model_r2({"test_r2": test_scores, "best_val_r2": val_scores})
+    resolved = resolve_model_r2(
+        {"test_r2": test_scores, "best_val_r2": val_scores}
+    )
     assert resolved["split"] == "test"
     assert resolved["scores"]["Bitumen"] == 0.66
     assert format_r2_headline({"test_r2": test_scores}) == "R² 0.55"
@@ -535,7 +624,9 @@ def test_experiment_split_holds_out_campaigns(tmp_path: Path) -> None:
     for campaign in (1, 2, 3, 4, 5):
         for index in range(4):
             filename = f"IMG_{campaign:04d}_N{campaign}_{index}.jpg"
-            Image.new("RGB", (32, 32), color=(100, 100, 100)).save(image_dir / filename)
+            Image.new("RGB", (32, 32), color=(100, 100, 100)).save(
+                image_dir / filename
+            )
             rows.append(
                 {
                     "Image": filename,
@@ -592,7 +683,9 @@ def test_continue_training_from_checkpoint(tmp_path: Path) -> None:
     train_loader = DataLoader(train_ds, batch_size=4, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=4, shuffle=False)
 
-    model = BitumenRegressor(architecture="baseline", pretrained=False, head="native")
+    model = BitumenRegressor(
+        architecture="baseline", pretrained=False, head="native"
+    )
     trainer = RegressionTrainer(
         model=model,
         train_loader=train_loader,
@@ -619,7 +712,9 @@ def test_continue_training_from_checkpoint(tmp_path: Path) -> None:
         result=finished[0],
         save_dir=tmp_path,
     )
-    continued = BitumenRegressor.from_checkpoint(paths["model_path"], {"architecture": "baseline", "head": "native"})
+    continued = BitumenRegressor.from_checkpoint(
+        paths["model_path"], {"architecture": "baseline", "head": "native"}
+    )
     continued.train()
     trainer2 = RegressionTrainer(
         model=continued,
@@ -671,8 +766,13 @@ def test_feature_extraction_keeps_backbone_frozen(tmp_path: Path) -> None:
         adaptation="fe",
     )
     trainer.run()
-    assert all(not parameter.requires_grad for parameter in model.backbone_parameters())
-    assert all(parameter.requires_grad for parameter in model.head_parameters())
+    assert all(
+        not parameter.requires_grad
+        for parameter in model.backbone_parameters()
+    )
+    assert all(
+        parameter.requires_grad for parameter in model.head_parameters()
+    )
 
 
 def test_paper_recipe_constants() -> None:
@@ -704,10 +804,17 @@ def test_paper_recipe_constants() -> None:
     assert learning_rate_for_adaptation("scratch") == LEARNING_RATE_FT
 
 
-def test_dataset_raw_percentages_and_equal_frequency_bins(tmp_path: Path) -> None:
+def test_dataset_raw_percentages_and_equal_frequency_bins(
+    tmp_path: Path,
+) -> None:
     csv_path, image_dir = _write_tiny_dataset(tmp_path, count=12)
     dataset = RegressionDataset(
-        str(csv_path), str(image_dir), split="train", val_fraction=0.25, test_fraction=0.25, seed=42
+        str(csv_path),
+        str(image_dir),
+        split="train",
+        val_fraction=0.25,
+        test_fraction=0.25,
+        seed=42,
     )
     assert dataset.normalise is False
     _, target = dataset[0]
@@ -720,7 +827,9 @@ def test_dataset_raw_percentages_and_equal_frequency_bins(tmp_path: Path) -> Non
 
 
 def test_legacy_resnet18_round_trip(tmp_path: Path) -> None:
-    model = BitumenRegressor(architecture="resnet18", pretrained=False, head="native")
+    model = BitumenRegressor(
+        architecture="resnet18", pretrained=False, head="native"
+    )
     result = _make_dummy_result()
     paths = save_model(
         model=model,
@@ -728,9 +837,15 @@ def test_legacy_resnet18_round_trip(tmp_path: Path) -> None:
         output_stats=result.output_stats,
         result=result,
         save_dir=tmp_path,
-        extra_metadata={"architecture": "resnet18", "head": "native", "image_size": 224},
+        extra_metadata={
+            "architecture": "resnet18",
+            "head": "native",
+            "image_size": 224,
+        },
     )
-    loaded = BitumenRegressor.from_checkpoint(paths["model_path"], {"architecture": "resnet18"})
+    loaded = BitumenRegressor.from_checkpoint(
+        paths["model_path"], {"architecture": "resnet18"}
+    )
     with torch.no_grad():
         output = loaded(torch.rand(1, 3, 224, 224))
     assert output.shape == (1, 3)

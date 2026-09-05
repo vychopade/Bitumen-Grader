@@ -2,11 +2,14 @@
 Train page.
 
 Load a labelled table, pick the image folder, choose architecture,
-and run training. ``RegressionDataset`` handles matching/splitting; this page
-just builds the summaries and wires ``RegressionTrainer`` to the progress panel.
+and run training. ``RegressionDataset`` handles matching/splitting; this
+page just builds the summaries and wires ``RegressionTrainer`` to the
+progress panel.
 """
+
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
@@ -19,13 +22,13 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
-    QSizePolicy,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -44,8 +47,8 @@ from app.ml.cnn_model import (
 from app.ml.dataset import RegressionDataset
 from app.ml.recipe import (
     BATCH_SIZE,
-    IMAGE_SIZE,
     DEFAULT_SPLIT_MODE,
+    IMAGE_SIZE,
     NUM_EPOCHS,
     TEST_FRACTION,
     VAL_FRACTION,
@@ -53,12 +56,18 @@ from app.ml.recipe import (
     learning_rate_for_adaptation,
 )
 from app.ml.trainer import RegressionTrainer, RegressionTrainingResult
-from app.pages.train_widgets import _CsvDropZone, _DatasetSummaryCard, _FolderDropZone, _MatchSummaryCard
+from app.pages.train_widgets import (
+    _CsvDropZone,
+    _DatasetSummaryCard,
+    _FolderDropZone,
+    _MatchSummaryCard,
+)
 from app.paths import MODELS_DIR
 from app.theme import (
     BACKGROUND_COLOR,
     BORDER_COLOR,
     DANGER_COLOR,
+    LABEL_RESET_QSS,
     PAGE_MARGINS,
     PAGE_SPACING,
     SURFACE_COLOR,
@@ -67,12 +76,15 @@ from app.theme import (
     accent_button_qss,
     card_qss,
     danger_outline_button_qss,
-    LABEL_RESET_QSS,
 )
 from app.utils.data_io import read_labels_file
-from app.utils.media import collect_images
 from app.utils.image_utils import image_size_from_metadata, is_legacy_resnet18
-from app.utils.model_io import list_saved_models, load_model_metadata, save_model
+from app.utils.media import collect_images
+from app.utils.model_io import (
+    list_saved_models,
+    load_model_metadata,
+    save_model,
+)
 
 if TYPE_CHECKING:
     from app.main_window import MainWindow
@@ -81,6 +93,9 @@ LEFT_PANEL_WIDTH = 500
 VAL_SPLIT_REBUILD_DEBOUNCE_MS = 300
 
 EXPECTED_COLUMNS = list(RegressionDataset.EXPECTED_COLUMNS)
+_COMBO_SIZE_ADJUST = (
+    QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+)
 
 
 def _default_num_workers() -> int:
@@ -89,8 +104,6 @@ def _default_num_workers() -> int:
     Extra workers decode the next batch while training runs. On Windows,
     spawning them is slow in a desktop app, so we use 0 there.
     """
-    import platform
-
     return 0 if platform.system() == "Windows" else 4
 
 
@@ -102,7 +115,11 @@ class TrainPage(QWidget):
     the embedded ``ProgressPanel``.
     """
 
-    def __init__(self, main_window: Optional["MainWindow"] = None, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        main_window: Optional["MainWindow"] = None,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self.main_window = main_window
 
@@ -146,7 +163,9 @@ class TrainPage(QWidget):
 
         self._rebuild_timer = QTimer(self)
         self._rebuild_timer.setSingleShot(True)
-        self._rebuild_timer.timeout.connect(self._maybe_rebuild_dataset_summary)
+        self._rebuild_timer.timeout.connect(
+            self._maybe_rebuild_dataset_summary
+        )
 
         self._thread: Optional[QThread] = None
         self._trainer: Optional[RegressionTrainer] = None
@@ -169,7 +188,9 @@ class TrainPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+        )
 
         content = QWidget()
         content.setStyleSheet("background: transparent;")
@@ -188,7 +209,9 @@ class TrainPage(QWidget):
         header.setSpacing(4)
 
         title = QLabel("Train")
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 16px; background: transparent;")
+        title.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 16px; background: transparent;"
+        )
         header.addWidget(title)
 
         return header
@@ -239,7 +262,10 @@ class TrainPage(QWidget):
 
         self._csv_loaded_label = QLabel("")
         self._csv_loaded_label.setWordWrap(True)
-        self._csv_loaded_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        self._csv_loaded_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px;"
+            f" background: transparent;"
+        )
         self._csv_loaded_label.setVisible(False)
         layout.addWidget(self._csv_loaded_label)
 
@@ -249,21 +275,28 @@ class TrainPage(QWidget):
             # Scoped to #csvErrorBanner -- QLabel is a QFrame subclass in Qt,
             # so a bare "QFrame" selector would also draw this border around
             # the word-wrapped error label nested inside, not just the banner.
-            f"QFrame#csvErrorBanner {{ background-color: rgba(229, 72, 77, 25); border: 1px solid {DANGER_COLOR};"
+            f"QFrame#csvErrorBanner {{ background-color: rgba(229, 72, 77, "
+            f"25); border: 1px solid {DANGER_COLOR};"
             f"border-radius: 3px; }}"
         )
         error_layout = QVBoxLayout(self._csv_error_banner)
         error_layout.setContentsMargins(12, 10, 12, 10)
         self._csv_error_label = QLabel("")
         self._csv_error_label.setWordWrap(True)
-        self._csv_error_label.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 11px; background: transparent;")
+        self._csv_error_label.setStyleSheet(
+            f"color: {DANGER_COLOR}; font-size: 11px; background: transparent;"
+        )
         error_layout.addWidget(self._csv_error_label)
         self._csv_error_banner.setVisible(False)
         layout.addWidget(self._csv_error_banner)
 
         self._preview_table = QTableWidget()
-        self._preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._preview_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._preview_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self._preview_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
         self._preview_table.verticalHeader().setVisible(False)
         self._preview_table.setFixedHeight(160)
         self._preview_table.horizontalHeader().setStretchLastSection(True)
@@ -271,11 +304,13 @@ class TrainPage(QWidget):
             f"""
             QTableWidget {{
                 background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
-                border: 1px solid {BORDER_COLOR}; border-radius: 3px; gridline-color: {BORDER_COLOR};
+                border: 1px solid {BORDER_COLOR}; border-radius: 3px;
+                gridline-color: {BORDER_COLOR};
             }}
             QTableWidget::item {{ padding: 3px; }}
             QHeaderView::section {{
-                background-color: {SURFACE_COLOR}; color: {TEXT_SECONDARY}; border: none;
+                background-color: {SURFACE_COLOR}; color: {TEXT_SECONDARY};
+                border: none;
                 padding: 5px; font-size: 10px; font-weight: 600;
             }}
             """
@@ -286,43 +321,61 @@ class TrainPage(QWidget):
         self._column_mapping_frame = QFrame()
         self._column_mapping_frame.setObjectName("columnMappingFrame")
         self._column_mapping_frame.setStyleSheet(
-            f"QFrame#columnMappingFrame {{ background-color: {BACKGROUND_COLOR}; border-radius: 3px; }}"
+            f"QFrame#columnMappingFrame {{ background-color: "
+            f"{BACKGROUND_COLOR}; border-radius: 3px; }}"
             f"{LABEL_RESET_QSS}"
         )
         mapping_form = QFormLayout(self._column_mapping_frame)
         mapping_form.setContentsMargins(12, 10, 12, 10)
         mapping_form.setSpacing(6)
         self._add_mapping_row(mapping_form, "Filename column:", "Image")
-        self._add_mapping_row(mapping_form, "Outputs to predict:", ", ".join(OUTPUT_NAMES))
+        self._add_mapping_row(
+            mapping_form, "Outputs to predict:", ", ".join(OUTPUT_NAMES)
+        )
         self._add_mapping_row(mapping_form, "Display only:", "Pan (batch)")
         self._column_mapping_frame.setVisible(False)
         layout.addWidget(self._column_mapping_frame)
 
         return section
 
-    def _add_mapping_row(self, form: QFormLayout, label_text: str, value_text: str) -> None:
+    def _add_mapping_row(
+        self, form: QFormLayout, label_text: str, value_text: str
+    ) -> None:
         label = QLabel(label_text)
-        label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px;"
+            f" background: transparent;"
+        )
         value = QLabel(value_text)
         value.setWordWrap(True)
-        value.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 600; background: transparent;")
+        value.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 600;"
+            f" background: transparent;"
+        )
         form.addRow(label, value)
 
     def _build_folder_section(self) -> QFrame:
         section, layout = self._make_section_frame("Photo folder")
 
         self._folder_drop_zone = _FolderDropZone()
-        self._folder_drop_zone.folder_selected.connect(self._apply_image_folder)
+        self._folder_drop_zone.folder_selected.connect(
+            self._apply_image_folder
+        )
         layout.addWidget(self._folder_drop_zone)
 
         self._folder_path_label = QLabel("")
         self._folder_path_label.setWordWrap(True)
-        self._folder_path_label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 11px; background: transparent;")
+        self._folder_path_label.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 11px; background: transparent;"
+        )
         self._folder_path_label.setVisible(False)
         layout.addWidget(self._folder_path_label)
 
         self._folder_count_label = QLabel("")
-        self._folder_count_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        self._folder_count_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px;"
+            f" background: transparent;"
+        )
         self._folder_count_label.setVisible(False)
         layout.addWidget(self._folder_count_label)
 
@@ -338,7 +391,7 @@ class TrainPage(QWidget):
         layout.addWidget(self._dataset_summary_card)
         return section
 
-    # -- Right panel: model settings & training --------------------------------
+    # -- Right panel: model settings & training -------------------------------
 
     def _build_right_panel(self) -> QWidget:
         container = QWidget()
@@ -366,7 +419,9 @@ class TrainPage(QWidget):
 
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
-        self._status_label.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 12px; background: transparent;")
+        self._status_label.setStyleSheet(
+            f"color: {DANGER_COLOR}; font-size: 12px; background: transparent;"
+        )
         self._status_label.setVisible(False)
         layout.addWidget(self._status_label)
 
@@ -383,18 +438,23 @@ class TrainPage(QWidget):
         form = QFormLayout()
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
 
         self._model_name_edit = QLineEdit()
         self._model_name_edit.setPlaceholderText("e.g. Site-A Run 1")
-        self._model_name_edit.textChanged.connect(lambda _text: self._update_start_button_state())
+        self._model_name_edit.textChanged.connect(
+            lambda _text: self._update_start_button_state()
+        )
         self._add_form_row(form, "Model Name", self._model_name_edit)
 
         layout.addLayout(form)
 
         self._continue_checkbox = QCheckBox("Continue training a saved model")
         self._continue_checkbox.setToolTip(
-            "Load an existing checkpoint and keep training it on the dataset below. "
+            "Load an existing checkpoint and keep training it on the dataset "
+            "below. "
             "Saves a new model; the original is left unchanged."
         )
         self._continue_checkbox.toggled.connect(self._on_continue_toggled)
@@ -402,18 +462,21 @@ class TrainPage(QWidget):
 
         self._continue_combo = QComboBox()
         self._continue_combo.setToolTip("Which saved model to continue from.")
-        self._continue_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._continue_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        self._continue_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
+        self._continue_combo.setSizeAdjustPolicy(_COMBO_SIZE_ADJUST)
         self._continue_combo.setMinimumContentsLength(12)
-        self._continue_combo.currentIndexChanged.connect(self._on_continue_model_changed)
+        self._continue_combo.currentIndexChanged.connect(
+            self._on_continue_model_changed
+        )
         self._continue_combo.setVisible(False)
         layout.addWidget(self._continue_combo)
 
         section.setStyleSheet(
             f"""
-            QFrame {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}
+            QFrame {{ background-color: {SURFACE_COLOR};
+            border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}
             {LABEL_RESET_QSS}
             QLineEdit {{
                 background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
@@ -426,7 +489,8 @@ class TrainPage(QWidget):
                 padding: 6px 28px 6px 10px; min-height: 26px;
             }}
             QComboBox::drop-down {{ border: none; width: 20px; }}
-            QCheckBox {{ color: {TEXT_PRIMARY}; font-size: 12px; background: transparent; }}
+            QCheckBox {{ color: {TEXT_PRIMARY}; font-size: 12px;
+            background: transparent; }}
             """
         )
         return section
@@ -437,36 +501,50 @@ class TrainPage(QWidget):
         form = QFormLayout()
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
 
         self._architecture_combo = QComboBox()
         for key in TRAINABLE_ARCHITECTURES:
             self._architecture_combo.addItem(ARCHITECTURE_LABELS[key], key)
         self._architecture_combo.setCurrentIndex(0)
         self._architecture_combo.setToolTip(
-            "Baseline CNN from scratch is the most robust default for froth images."
+            "Baseline CNN from scratch is the most robust default for froth "
+            "images."
         )
-        self._architecture_combo.currentIndexChanged.connect(self._on_strategy_changed)
-        self._architecture_combo.currentIndexChanged.connect(self._sync_learning_rate_from_adaptation)
+        self._architecture_combo.currentIndexChanged.connect(
+            self._on_strategy_changed
+        )
+        self._architecture_combo.currentIndexChanged.connect(
+            self._sync_learning_rate_from_adaptation
+        )
         self._add_form_row(form, "Architecture", self._architecture_combo)
 
         self._adaptation_combo = QComboBox()
         self._adaptation_combo.addItem("Fine-tune (recommended)", "ft")
         self._adaptation_combo.addItem("Frozen features", "fe")
         self._adaptation_combo.setToolTip(
-            "Fine-tuning trains the whole net and beat frozen ImageNet features in the study. "
-            "Frozen features keep the backbone fixed and were weaker, especially for Bitumen."
+            "Fine-tuning trains the whole net and beat frozen ImageNet "
+            "features in the study. "
+            "Frozen features keep the backbone fixed and were weaker, "
+            "especially for Bitumen."
         )
-        self._adaptation_combo.currentIndexChanged.connect(self._on_strategy_changed)
-        self._adaptation_combo.currentIndexChanged.connect(self._sync_learning_rate_from_adaptation)
+        self._adaptation_combo.currentIndexChanged.connect(
+            self._on_strategy_changed
+        )
+        self._adaptation_combo.currentIndexChanged.connect(
+            self._sync_learning_rate_from_adaptation
+        )
         self._adaptation_label = QLabel("Adaptation")
         self._adaptation_label.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;"
+            f"color: {TEXT_SECONDARY}; font-size: 12px;"
+            f" background: transparent;"
         )
-        self._adaptation_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._adaptation_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        self._adaptation_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
+        self._adaptation_combo.setSizeAdjustPolicy(_COMBO_SIZE_ADJUST)
         self._adaptation_combo.setMinimumContentsLength(12)
         form.addRow(self._adaptation_label, self._adaptation_combo)
 
@@ -474,18 +552,20 @@ class TrainPage(QWidget):
         self._head_combo.addItem("Native linear", "native")
         self._head_combo.addItem("2-layer (C2)", "c2")
         self._head_combo.setToolTip(
-            "Native is a single linear layer. C2 is the 2-layer head that helped Solids. "
+            "Native is a single linear layer. C2 is the 2-layer head that "
+            "helped Solids. "
             "Deeper batch-norm heads are omitted because they collapse."
         )
         self._head_combo.currentIndexChanged.connect(self._on_strategy_changed)
         self._head_label = QLabel("Head")
         self._head_label.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;"
+            f"color: {TEXT_SECONDARY}; font-size: 12px;"
+            f" background: transparent;"
         )
-        self._head_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._head_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        self._head_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
+        self._head_combo.setSizeAdjustPolicy(_COMBO_SIZE_ADJUST)
         self._head_combo.setMinimumContentsLength(12)
         form.addRow(self._head_label, self._head_combo)
 
@@ -493,8 +573,10 @@ class TrainPage(QWidget):
         self._epochs_spin.setRange(1, 200)
         self._epochs_spin.setValue(NUM_EPOCHS)
         self._epochs_spin.setToolTip(
-            "How many full passes over the training images (100 in the study). "
-            "The checkpoint with the best mean validation R² is kept even if a later epoch is worse."
+            "How many full passes over the training images (100 in the "
+            "study). "
+            "The checkpoint with the best mean validation R² is kept even if "
+            "a later epoch is worse."
         )
         self._add_form_row(form, "Epochs", self._epochs_spin)
 
@@ -502,8 +584,10 @@ class TrainPage(QWidget):
         self._batch_size_spin.setRange(1, 128)
         self._batch_size_spin.setValue(BATCH_SIZE)
         self._batch_size_spin.setToolTip(
-            "Images per Adam step (32 in the study). Lower this if you run out of memory; "
-            "higher is faster on GPU but needs more RAM. Last incomplete batch is still used."
+            "Images per Adam step (32 in the study). Lower this if you run "
+            "out of memory; "
+            "higher is faster on GPU but needs more RAM. Last incomplete "
+            "batch is still used."
         )
         self._add_form_row(form, "Batch size", self._batch_size_spin)
 
@@ -512,8 +596,10 @@ class TrainPage(QWidget):
         self._lr_spin.setRange(1e-6, 0.1)
         self._lr_spin.setSingleStep(1e-4)
         self._lr_spin.setToolTip(
-            "Adam step size. The study used 0.0001 for baseline/fine-tune and 0.001 when the "
-            "backbone is frozen. Lower it if loss jumps around; raise it if loss barely moves. "
+            "Adam step size. The study used 0.0001 for baseline/fine-tune and "
+            "0.001 when the "
+            "backbone is frozen. Lower it if loss jumps around;"
+            " raise it if loss barely moves. "
             "Changing Adaptation resets this to the study value for that mode."
         )
         self._add_form_row(form, "Learning rate", self._lr_spin)
@@ -522,7 +608,8 @@ class TrainPage(QWidget):
 
         section.setStyleSheet(
             f"""
-            QFrame {{ background-color: {SURFACE_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}
+            QFrame {{ background-color: {SURFACE_COLOR};
+            border: 1px solid {BORDER_COLOR}; border-radius: 3px; }}
             {LABEL_RESET_QSS}
             QComboBox {{
                 background-color: {BACKGROUND_COLOR}; color: {TEXT_PRIMARY};
@@ -541,12 +628,19 @@ class TrainPage(QWidget):
         self._sync_learning_rate_from_adaptation()
         return section
 
-    def _add_form_row(self, form: QFormLayout, label_text: str, field: QWidget) -> None:
+    def _add_form_row(
+        self, form: QFormLayout, label_text: str, field: QWidget
+    ) -> None:
         label = QLabel(label_text)
-        label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;")
-        field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 12px;"
+            f" background: transparent;"
+        )
+        field.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         if isinstance(field, QComboBox):
-            field.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            field.setSizeAdjustPolicy(_COMBO_SIZE_ADJUST)
             field.setMinimumContentsLength(12)
         form.addRow(label, field)
 
@@ -574,7 +668,9 @@ class TrainPage(QWidget):
         data = self._head_combo.currentData()
         return str(data) if data else "native"
 
-    def _is_transfer_architecture(self, architecture: Optional[str] = None) -> bool:
+    def _is_transfer_architecture(
+        self, architecture: Optional[str] = None
+    ) -> bool:
         architecture = architecture or self._current_architecture()
         return architecture in {"resnet50", "vgg16", "resnet18"}
 
@@ -583,16 +679,24 @@ class TrainPage(QWidget):
             return BATCH_SIZE
         return max(1, int(self._batch_size_spin.value()))
 
-    def _current_learning_rate(self, adaptation: Optional[str] = None) -> float:
+    def _current_learning_rate(
+        self, adaptation: Optional[str] = None
+    ) -> float:
         if self._lr_spin is None:
-            return learning_rate_for_adaptation(adaptation or self._current_adaptation())
+            return learning_rate_for_adaptation(
+                adaptation or self._current_adaptation()
+            )
         return float(self._lr_spin.value())
 
     def _sync_learning_rate_from_adaptation(self, *_args) -> None:
-        """Fill Adam LR with the study value for the current Adaptation mode."""
+        """Fill Adam LR with the study value for the current Adaptation
+        mode."""
         if self._lr_spin is None:
             return
-        if self._is_transfer_architecture() and self._adaptation_combo is not None:
+        if (
+            self._is_transfer_architecture()
+            and self._adaptation_combo is not None
+        ):
             data = self._adaptation_combo.currentData()
             mode = str(data) if data else "ft"
         else:
@@ -609,7 +713,8 @@ class TrainPage(QWidget):
             self._parent_model_meta = None
             if self._architecture_combo is not None:
                 self._architecture_combo.setEnabled(True)
-                # Drop a legacy-only item if it was added for continue-training.
+                # Drop a legacy-only item if it was added for
+                # continue-training.
                 self._restore_trainable_architectures()
         self._on_strategy_changed()
         self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
@@ -622,7 +727,9 @@ class TrainPage(QWidget):
         self._architecture_combo.clear()
         for key in TRAINABLE_ARCHITECTURES:
             self._architecture_combo.addItem(ARCHITECTURE_LABELS[key], key)
-        index = self._architecture_combo.findData(current if current in TRAINABLE_ARCHITECTURES else "baseline")
+        index = self._architecture_combo.findData(
+            current if current in TRAINABLE_ARCHITECTURES else "baseline"
+        )
         self._architecture_combo.setCurrentIndex(max(0, index))
         self._architecture_combo.blockSignals(False)
 
@@ -647,13 +754,20 @@ class TrainPage(QWidget):
         if previous_path:
             for index in range(self._continue_combo.count()):
                 data = self._continue_combo.itemData(index)
-                if isinstance(data, dict) and data.get("model_path") == previous_path:
+                if (
+                    isinstance(data, dict)
+                    and data.get("model_path") == previous_path
+                ):
                     self._continue_combo.setCurrentIndex(index)
                     break
         self._continue_combo.blockSignals(False)
 
     def _on_continue_model_changed(self, _index: int = 0) -> None:
-        data = self._continue_combo.currentData() if self._continue_combo is not None else None
+        data = (
+            self._continue_combo.currentData()
+            if self._continue_combo is not None
+            else None
+        )
         if not isinstance(data, dict):
             self._parent_model_meta = None
             self._on_strategy_changed()
@@ -664,7 +778,8 @@ class TrainPage(QWidget):
             self._architecture_combo.blockSignals(True)
             if self._architecture_combo.findData(architecture) < 0:
                 self._architecture_combo.addItem(
-                    ARCHITECTURE_LABELS.get(architecture, architecture), architecture
+                    ARCHITECTURE_LABELS.get(architecture, architecture),
+                    architecture,
                 )
             index = self._architecture_combo.findData(architecture)
             if index >= 0:
@@ -677,14 +792,18 @@ class TrainPage(QWidget):
             if head_index >= 0:
                 self._head_combo.setCurrentIndex(head_index)
             self._head_combo.setEnabled(False)
-        if self._model_name_edit is not None and not self._model_name_edit.text().strip():
+        if (
+            self._model_name_edit is not None
+            and not self._model_name_edit.text().strip()
+        ):
             base = data.get("name") or "model"
             self._model_name_edit.setText(f"{base} retrained")
         self._on_strategy_changed()
         self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
 
     def prepare_retrain(self, metadata: Dict) -> None:
-        """Pre-select a saved model so the user can continue it on a new dataset."""
+        """Pre-select a saved model so the user can continue it on a new
+        dataset."""
         if self._continue_checkbox is None:
             return
         self._refresh_continue_combo()
@@ -693,12 +812,19 @@ class TrainPage(QWidget):
         if self._continue_combo is not None and target_path:
             for index in range(self._continue_combo.count()):
                 data = self._continue_combo.itemData(index)
-                if isinstance(data, dict) and data.get("model_path") == target_path:
+                if (
+                    isinstance(data, dict)
+                    and data.get("model_path") == target_path
+                ):
                     self._continue_combo.setCurrentIndex(index)
                     break
             else:
-                self._continue_combo.addItem(metadata.get("name") or "Saved model", metadata)
-                self._continue_combo.setCurrentIndex(self._continue_combo.count() - 1)
+                self._continue_combo.addItem(
+                    metadata.get("name") or "Saved model", metadata
+                )
+                self._continue_combo.setCurrentIndex(
+                    self._continue_combo.count() - 1
+                )
         base = metadata.get("name") or "model"
         if self._model_name_edit is not None:
             self._model_name_edit.setText(f"{base} retrained")
@@ -706,8 +832,13 @@ class TrainPage(QWidget):
 
     def _on_strategy_changed(self, _index: int = 0) -> None:
         is_transfer = self._is_transfer_architecture()
-        continuing = bool(self._continue_checkbox is not None and self._continue_checkbox.isChecked())
-        show_transfer_controls = is_transfer or (continuing and self._is_transfer_architecture())
+        continuing = bool(
+            self._continue_checkbox is not None
+            and self._continue_checkbox.isChecked()
+        )
+        show_transfer_controls = is_transfer or (
+            continuing and self._is_transfer_architecture()
+        )
 
         if self._adaptation_combo is not None:
             self._adaptation_combo.setVisible(show_transfer_controls)
@@ -715,7 +846,9 @@ class TrainPage(QWidget):
                 self._adaptation_label.setVisible(show_transfer_controls)
         if self._head_combo is not None:
             self._head_combo.setVisible(show_transfer_controls)
-            self._head_combo.setEnabled(show_transfer_controls and not continuing)
+            self._head_combo.setEnabled(
+                show_transfer_controls and not continuing
+            )
             if self._head_label is not None:
                 self._head_label.setVisible(show_transfer_controls)
 
@@ -723,18 +856,24 @@ class TrainPage(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: D401 - Qt override
         super().showEvent(event)
-        if self._continue_checkbox is not None and self._continue_checkbox.isChecked():
+        if (
+            self._continue_checkbox is not None
+            and self._continue_checkbox.isChecked()
+        ):
             self._refresh_continue_combo()
 
     def _on_csv_selected(self, path: str) -> None:
         try:
             df = read_labels_file(path)
-        except Exception as exc:  # noqa: BLE001 - surface any parse failure to the user
+        except Exception as exc:  # noqa: BLE001
+            # surface any parse failure to the user
             self._show_status_error(f"Couldn't read label file: {exc}")
             return
 
         self._csv_path = path
-        missing = [column for column in EXPECTED_COLUMNS if column not in df.columns]
+        missing = [
+            column for column in EXPECTED_COLUMNS if column not in df.columns
+        ]
 
         if missing:
             self._csv_dataframe = None
@@ -742,13 +881,19 @@ class TrainPage(QWidget):
             self._preview_table.setVisible(False)
             self._column_mapping_frame.setVisible(False)
             self._csv_error_label.setText(
-                f"Missing columns: {', '.join(missing)}.\nExpected: {', '.join(EXPECTED_COLUMNS)}"
+                (
+                    f"Missing columns: {', '.join(missing)}.\n"
+                    f"Expected: {', '.join(EXPECTED_COLUMNS)}"
+                )
             )
             self._csv_error_banner.setVisible(True)
         else:
             self._csv_dataframe = df
             self._csv_error_banner.setVisible(False)
-            self._csv_loaded_label.setText(f"Loaded \u201c{Path(path).name}\u201d \u2014 {len(df)} row(s).")
+            self._csv_loaded_label.setText(
+                f"Loaded \u201c{Path(path).name}\u201d \u2014 {len(df)} "
+                f"row(s)."
+            )
             self._csv_loaded_label.setVisible(True)
             self._populate_preview_table(df)
             self._preview_table.setVisible(True)
@@ -762,7 +907,9 @@ class TrainPage(QWidget):
         self._preview_table.clear()
         self._preview_table.setColumnCount(len(preview.columns))
         self._preview_table.setRowCount(len(preview))
-        self._preview_table.setHorizontalHeaderLabels([str(column) for column in preview.columns])
+        self._preview_table.setHorizontalHeaderLabels(
+            [str(column) for column in preview.columns]
+        )
 
         for row_index in range(len(preview)):
             for col_index, column in enumerate(preview.columns):
@@ -775,7 +922,8 @@ class TrainPage(QWidget):
         self._preview_table.resizeColumnsToContents()
 
     def _apply_image_folder(self, folder: str) -> bool:
-        """Set Step 2 from a folder path. Returns False if the folder can't be read."""
+        """Set Step 2 from a folder path. Returns False if the folder can't be
+        read."""
         try:
             image_count = len(collect_images(folder))
         except OSError as exc:
@@ -786,7 +934,9 @@ class TrainPage(QWidget):
         self._folder_path_label.setText(folder)
         self._folder_path_label.setVisible(True)
         count_word = "image" if image_count == 1 else "images"
-        self._folder_count_label.setText(f"{image_count} {count_word} in this folder.")
+        self._folder_count_label.setText(
+            f"{image_count} {count_word} in this folder."
+        )
         self._folder_count_label.setVisible(True)
 
         self._maybe_rebuild_dataset_summary()
@@ -794,8 +944,12 @@ class TrainPage(QWidget):
         return True
 
     def _uses_target_normalisation(self) -> bool:
-        """New runs train on raw %; continued z-scored checkpoints keep that scale."""
-        continuing = bool(self._continue_checkbox is not None and self._continue_checkbox.isChecked())
+        """New runs train on raw %; continued z-scored checkpoints keep that
+        scale."""
+        continuing = bool(
+            self._continue_checkbox is not None
+            and self._continue_checkbox.isChecked()
+        )
         if continuing and self._parent_model_meta:
             return bool(self._parent_model_meta.get("normalise_targets", True))
         return False
@@ -803,7 +957,11 @@ class TrainPage(QWidget):
     def _dataset_kwargs(self, *, normalise: Optional[bool] = None) -> Dict:
         image_size = IMAGE_SIZE
         legacy_crop = False
-        if self._continue_checkbox is not None and self._continue_checkbox.isChecked() and self._parent_model_meta:
+        if (
+            self._continue_checkbox is not None
+            and self._continue_checkbox.isChecked()
+            and self._parent_model_meta
+        ):
             image_size = image_size_from_metadata(self._parent_model_meta)
             legacy_crop = is_legacy_resnet18(self._parent_model_meta)
         if normalise is None:
@@ -821,7 +979,8 @@ class TrainPage(QWidget):
         }
 
     def _maybe_rebuild_dataset_summary(self) -> None:
-        """Re-match filenames and refresh Step 2/3 after CSV/folder/split changes."""
+        """Re-match filenames and refresh Step 2/3 after CSV/folder/split
+        changes."""
         if self._csv_dataframe is None or not self._image_dir:
             self._match_card.setVisible(False)
             self._step3_frame.setVisible(False)
@@ -835,7 +994,8 @@ class TrainPage(QWidget):
             train_dataset = RegressionDataset(split="train", **kwargs)
             val_dataset = RegressionDataset(split="val", **kwargs)
             test_dataset = RegressionDataset(split="test", **kwargs)
-        except Exception as exc:  # noqa: BLE001 - matching can fail in many ways (bad path, bad CSV, etc.)
+        except Exception as exc:  # noqa: BLE001
+            # matching can fail in many ways (bad path, bad CSV, etc.)
             self._show_status_error(f"Couldn't match images: {exc}")
             self._match_card.setVisible(False)
             self._step3_frame.setVisible(False)
@@ -854,8 +1014,12 @@ class TrainPage(QWidget):
         self._match_card.setVisible(True)
 
         if match_summary["matched"] > 0:
-            output_ranges = self._compute_full_output_ranges(train_dataset.matched)
-            pan_distribution = self._compute_full_pan_distribution(train_dataset.matched)
+            output_ranges = self._compute_full_output_ranges(
+                train_dataset.matched
+            )
+            pan_distribution = self._compute_full_pan_distribution(
+                train_dataset.matched
+            )
             self._dataset_summary_card.update_summary(
                 total=match_summary["matched"],
                 train_count=len(train_dataset),
@@ -875,12 +1039,22 @@ class TrainPage(QWidget):
             self._step3_frame.setVisible(False)
 
     @staticmethod
-    def _compute_full_output_ranges(matched: List[Dict]) -> Dict[str, Dict[str, float]]:
+    def _compute_full_output_ranges(
+        matched: List[Dict],
+    ) -> Dict[str, Dict[str, float]]:
         ranges: Dict[str, Dict[str, float]] = {}
-        for key, label in (("water", "Water"), ("solids", "Solids"), ("bitumen", "Bitumen")):
+        for key, label in (
+            ("water", "Water"),
+            ("solids", "Solids"),
+            ("bitumen", "Bitumen"),
+        ):
             values = [item[key] for item in matched]
             if values:
-                ranges[label] = {"min": min(values), "max": max(values), "mean": sum(values) / len(values)}
+                ranges[label] = {
+                    "min": min(values),
+                    "max": max(values),
+                    "mean": sum(values) / len(values),
+                }
             else:
                 ranges[label] = {"min": 0.0, "max": 0.0, "mean": 0.0}
         return ranges
@@ -893,13 +1067,19 @@ class TrainPage(QWidget):
             distribution[pan] = distribution.get(pan, 0) + 1
         return distribution
 
-    # -- Start-button gating ---------------------------------------------------
+    # -- Start-button gating --------------------------------------------------
 
     def _update_start_button_state(self) -> None:
         if self._thread is not None:
-            return  # a run is in progress; _set_training_ui_active manages the button then.
+            # A run is in progress; _set_training_ui_active
+            # manages the button then.
+            return
 
-        matched_count = self._train_dataset.get_match_summary()["matched"] if self._train_dataset else 0
+        matched_count = (
+            self._train_dataset.get_match_summary()["matched"]
+            if self._train_dataset
+            else 0
+        )
         ready = (
             self._csv_dataframe is not None
             and self._image_dir is not None
@@ -935,22 +1115,31 @@ class TrainPage(QWidget):
             self._show_status_error("Enter a model name.")
             return
         if any(character in model_name for character in ("/", "\\")):
-            self._show_status_error("Model name can't contain \u201c/\u201d or \u201c\\\u201d.")
+            self._show_status_error(
+                "Model name can't contain \u201c/\u201d or \u201c\\\u201d."
+            )
             return
 
         if self._csv_dataframe is None or self._image_dir is None:
             self._show_status_error("Add labels and a photo folder first.")
             return
 
-        continuing = bool(self._continue_checkbox is not None and self._continue_checkbox.isChecked())
+        continuing = bool(
+            self._continue_checkbox is not None
+            and self._continue_checkbox.isChecked()
+        )
         parent_meta = self._parent_model_meta if continuing else None
         if continuing and not isinstance(parent_meta, dict):
-            self._show_status_error("Choose a saved model to continue training.")
+            self._show_status_error(
+                "Choose a saved model to continue training."
+            )
             return
         if continuing:
             parent_path = parent_meta.get("model_path")
             if not parent_path or not Path(parent_path).exists():
-                self._show_status_error("Couldn't find the saved model weights to continue from.")
+                self._show_status_error(
+                    "Couldn't find the saved model weights to continue from."
+                )
                 return
 
         kwargs = self._dataset_kwargs()
@@ -959,7 +1148,8 @@ class TrainPage(QWidget):
             train_dataset = RegressionDataset(split="train", **kwargs)
             val_dataset = RegressionDataset(split="val", **kwargs)
             test_dataset = RegressionDataset(split="test", **kwargs)
-        except Exception as exc:  # noqa: BLE001 - surface any dataset-build failure to the user
+        except Exception as exc:  # noqa: BLE001
+            # surface any dataset-build failure to the user
             self._show_status_error(f"Couldn't prepare dataset: {exc}")
             return
 
@@ -981,16 +1171,27 @@ class TrainPage(QWidget):
             loader_kwargs["pin_memory"] = True
 
         batch_size = self._current_batch_size()
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs)
+        train_loader = DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs
+        )
+        val_loader = DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs
+        )
         test_loader = None
         if len(test_dataset) > 0:
-            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs)
+            test_loader = DataLoader(
+                test_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                **loader_kwargs,
+            )
 
         architecture = self._current_architecture()
         head = self._current_head()
         adaptation = self._current_adaptation()
-        pretrained = self._is_transfer_architecture(architecture) and not continuing
+        pretrained = (
+            self._is_transfer_architecture(architecture) and not continuing
+        )
 
         torch.manual_seed(42)
         if device.type == "cuda":
@@ -1000,11 +1201,16 @@ class TrainPage(QWidget):
             if continuing:
                 architecture = parent_meta.get("architecture", architecture)
                 head = parent_meta.get("head", head)
-                model = BitumenRegressor.from_checkpoint(parent_meta["model_path"], parent_meta, device)
+                model = BitumenRegressor.from_checkpoint(
+                    parent_meta["model_path"], parent_meta, device
+                )
                 model.train()
             else:
-                model = BitumenRegressor(architecture=architecture, pretrained=pretrained, head=head)
-        except Exception as exc:  # noqa: BLE001 - architecture / checkpoint mismatches
+                model = BitumenRegressor(
+                    architecture=architecture, pretrained=pretrained, head=head
+                )
+        except Exception as exc:  # noqa: BLE001
+            # architecture / checkpoint mismatches
             self._show_status_error(f"Couldn't load model: {exc}")
             return
 
@@ -1014,7 +1220,9 @@ class TrainPage(QWidget):
             val_loader=val_loader,
             device=device,
             learning_rate=self._current_learning_rate(adaptation),
-            num_epochs=self._epochs_spin.value() if self._epochs_spin is not None else NUM_EPOCHS,
+            num_epochs=self._epochs_spin.value()
+            if self._epochs_spin is not None
+            else NUM_EPOCHS,
             weight_decay=WEIGHT_DECAY,
             output_stats=train_dataset.get_output_stats(),
             normalise_targets=bool(kwargs["normalise"]),
@@ -1035,8 +1243,12 @@ class TrainPage(QWidget):
             "image_size": image_size,
             "split_mode": train_dataset.split_mode,
             "continued_training": continuing,
-            "parent_model": (parent_meta or {}).get("name") if continuing else None,
-            "parent_model_path": (parent_meta or {}).get("model_path") if continuing else None,
+            "parent_model": (parent_meta or {}).get("name")
+            if continuing
+            else None,
+            "parent_model_path": (parent_meta or {}).get("model_path")
+            if continuing
+            else None,
             "recipe": "prince_prasad_table2",
             "normalise_targets": bool(kwargs["normalise"]),
             "epochs": trainer.num_epochs,
@@ -1077,7 +1289,12 @@ class TrainPage(QWidget):
         val_r2_dict: dict,
     ) -> None:
         self._progress_panel.update_progress(
-            epoch, train_loss, val_loss, val_mae_dict, val_sum_deviation, val_r2_dict
+            epoch,
+            train_loss,
+            val_loss,
+            val_mae_dict,
+            val_sum_deviation,
+            val_r2_dict,
         )
 
     def _on_early_stopped(self, epoch: int) -> None:
@@ -1122,7 +1339,9 @@ class TrainPage(QWidget):
                 metadata = load_model_metadata(paths["metadata_path"])
             except (OSError, ValueError):
                 metadata = None
-            self.main_window.set_active_model(str(paths["model_path"]), metadata)
+            self.main_window.set_active_model(
+                str(paths["model_path"]), metadata
+            )
 
         self._set_training_ui_active(False)
 
@@ -1153,7 +1372,10 @@ class TrainPage(QWidget):
         else:
             # Re-check enabled/tooltip from current dataset state.
             self._update_start_button_state()
-            if self._continue_checkbox is not None and self._continue_checkbox.isChecked():
+            if (
+                self._continue_checkbox is not None
+                and self._continue_checkbox.isChecked()
+            ):
                 self._on_continue_model_changed()
 
         for widget in (
