@@ -1,4 +1,4 @@
-"""Open photos, folders, and label tables (Qt dialogs and drag/drop)."""
+"""Qt file dialogs and drag-and-drop helpers for photos and label tables."""
 
 from __future__ import annotations
 
@@ -26,8 +26,7 @@ LABEL_DIALOG_FILTER = (
 def collect_from_urls(
     urls, *, extensions: Sequence[str], recurse_dirs: bool
 ) -> List[str]:
-    """Local files from a drag/drop. Folders expand when ``recurse_dirs`` is
-    set."""
+    """Turns a drop's URLs into local file paths. Pass the mime URLs, the suffixes you accept, and whether dropped folders should be walked. You get a list of matching paths."""
     suffixes = tuple(ext.lower() for ext in extensions)
     paths: List[str] = []
     seen: set[str] = set()
@@ -57,8 +56,7 @@ def collect_from_urls(
 def urls_have_accepted_files(
     urls, *, extensions: Sequence[str], recurse_dirs: bool
 ) -> bool:
-    """True if a drop contains at least one matching file or a folder of
-    them."""
+    """True if the drop has at least one matching file, or a folder when recurse_dirs is on. Same arguments as collect_from_urls, but you get a yes or no instead of the paths."""
     suffixes = tuple(ext.lower() for ext in extensions)
     for url in urls:
         if not url.isLocalFile():
@@ -117,11 +115,7 @@ def dropped_local_paths(
     *,
     recurse_dirs: bool = False,
 ) -> List[str]:
-    """Local file paths from a drag/drop that match ``extensions``.
-
-    When ``recurse_dirs`` is True, dropped folders are walked for
-    matching files.
-    """
+    """Pulls matching local files out of a drop event. Pass the event, the extensions you want, and set recurse_dirs if folders should be searched. You get a list of paths."""
     mime = event.mimeData()
     if mime is None or not mime.hasUrls():
         return []

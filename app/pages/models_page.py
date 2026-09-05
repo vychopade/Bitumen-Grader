@@ -1,9 +1,4 @@
-"""
-Models page.
-
-Browse, load, and delete saved models from ``models/``. Each one shows as a
-``ModelCard``; loading calls ``main_window.set_active_model(...)``.
-"""
+"""Models page. Lists every checkpoint in the models folder as a card. Loading one calls set_active_model on the main window."""
 
 from __future__ import annotations
 
@@ -45,11 +40,7 @@ MIN_COLUMNS = 2
 
 
 class _CardsGrid(QWidget):
-    """Responsive grid of ModelCard widgets.
-
-    Recalculates columns on resize (at least ``MIN_COLUMNS``) so cards stay
-    near ``CARD_MIN_WIDTH`` wide.
-    """
+    """A grid of model cards that adds columns when the window is wide enough. Cards stay around CARD_MIN_WIDTH so they do not stretch into unreadably long rows."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -67,7 +58,7 @@ class _CardsGrid(QWidget):
         self._cards = cards
         self._apply_layout(self._compute_columns())
 
-    def resizeEvent(self, event) -> None:  # noqa: D401 - Qt override
+    def resizeEvent(self, event) -> None:  # noqa: D401  Qt calls this when the grid is resized
         super().resizeEvent(event)
         columns = self._compute_columns()
         if columns != self._columns:
@@ -96,8 +87,7 @@ class _CardsGrid(QWidget):
         for col in range(columns):
             self._layout.setColumnStretch(col, 1)
 
-        # Extra stretch row so leftover height sits below the cards, not inside
-        # them.
+        # Extra stretch row so leftover height sits below the cards instead of stretching them.
         num_rows = (
             (len(self._cards) + columns - 1) // columns if self._cards else 0
         )
@@ -105,10 +95,7 @@ class _CardsGrid(QWidget):
 
 
 class ModelsPage(QWidget):
-    """Browse, load, and delete saved models.
-
-    Rescans ``models/`` whenever the page is shown.
-    """
+    """The Models tab. You can search, load, retrain, or delete saved checkpoints. The folder is rescanned every time you open the page."""
 
     def __init__(
         self,
@@ -135,7 +122,7 @@ class ModelsPage(QWidget):
 
         self._reload_models()
 
-    # -- UI construction ---------------------------------------------------
+    # Build the widgets and lay them out.
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -230,7 +217,7 @@ class ModelsPage(QWidget):
 
         return container
 
-    def showEvent(self, event) -> None:  # noqa: D401 - Qt override
+    def showEvent(self, event) -> None:  # noqa: D401  Qt calls this when the page is shown
         super().showEvent(event)
         self._reload_models()
 
@@ -300,7 +287,7 @@ class ModelsPage(QWidget):
         self._no_match_label.setVisible(has_models and not has_visible)
         self._scroll.setVisible(has_visible)
 
-    # -- Card actions --------------------------------------------------------
+    # Load, retrain, and delete from a card.
 
     def _on_load_requested(self, metadata: Dict[str, Any]) -> None:
         if self.main_window is None:

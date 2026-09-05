@@ -1,11 +1,4 @@
-"""
-Train page.
-
-Load a labelled table, pick the image folder, choose architecture,
-and run training. ``RegressionDataset`` handles matching/splitting; this
-page just builds the summaries and wires ``RegressionTrainer`` to the
-progress panel.
-"""
+"""Train page. You drop a labels file and a photo folder, pick an architecture, and start a run. Matching and splitting happen in RegressionDataset. This page just shows the summaries and pipes the trainer into the progress panel."""
 
 from __future__ import annotations
 
@@ -99,21 +92,12 @@ _COMBO_SIZE_ADJUST = (
 
 
 def _default_num_workers() -> int:
-    """How many DataLoader workers to use when reading images from disk.
-
-    Extra workers decode the next batch while training runs. On Windows,
-    spawning them is slow in a desktop app, so we use 0 there.
-    """
+    """How many extra processes should decode photos while the GPU trains. On Windows spawning those workers is slow in a desktop app, so we use 0 there and decode on the main process."""
     return 0 if platform.system() == "Windows" else 4
 
 
 class TrainPage(QWidget):
-    """Configure and run a training job.
-
-    Self-contained: load CSV + image folder here, match/split via
-    ``RegressionDataset``, train on a QThread, and stream progress into
-    the embedded ``ProgressPanel``.
-    """
+    """The Train tab. You load a labels file and photo folder here, then start a job on a background thread. Progress streams into the panel on the right."""
 
     def __init__(
         self,
@@ -176,7 +160,7 @@ class TrainPage(QWidget):
         self._build_ui()
         self._update_start_button_state()
 
-    # -- UI construction ---------------------------------------------------
+    # Build the widgets and lay them out.
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -232,7 +216,7 @@ class TrainPage(QWidget):
 
         return frame, layout
 
-    # -- Left panel: CSV / folder / dataset summary --------------------------
+    # Left column: labels file, photo folder, and the match summary.
 
     def _build_left_panel(self) -> QWidget:
         container = QWidget()
@@ -272,9 +256,7 @@ class TrainPage(QWidget):
         self._csv_error_banner = QFrame()
         self._csv_error_banner.setObjectName("csvErrorBanner")
         self._csv_error_banner.setStyleSheet(
-            # Scoped to #csvErrorBanner -- QLabel is a QFrame subclass in Qt,
-            # so a bare "QFrame" selector would also draw this border around
-            # the word-wrapped error label nested inside, not just the banner.
+            # Target the banner by id. QLabel is a QFrame in Qt, so a bare QFrame rule would also box the error text inside.
             f"QFrame#csvErrorBanner {{ background-color: rgba(229, 72, 77, "
             f"25); border: 1px solid {DANGER_COLOR};"
             f"border-radius: 3px; }}"
@@ -391,7 +373,7 @@ class TrainPage(QWidget):
         layout.addWidget(self._dataset_summary_card)
         return section
 
-    # -- Right panel: model settings & training -------------------------------
+    # Right column: architecture settings and the start button.
 
     def _build_right_panel(self) -> QWidget:
         container = QWidget()
@@ -689,8 +671,7 @@ class TrainPage(QWidget):
         return float(self._lr_spin.value())
 
     def _sync_learning_rate_from_adaptation(self, *_args) -> None:
-        """Fill Adam LR with the study value for the current Adaptation
-        mode."""
+        """Puts the paper's Adam learning rate into the spin box for the current adaptation mode."""
         if self._lr_spin is None:
             return
         if (
@@ -713,8 +694,7 @@ class TrainPage(QWidget):
             self._parent_model_meta = None
             if self._architecture_combo is not None:
                 self._architecture_combo.setEnabled(True)
-                # Drop a legacy-only item if it was added for
-                # continue-training.
+                # Remove ResNet-18 from the list if we only added it to continue an old checkpoint.
                 self._restore_trainable_architectures()
         self._on_strategy_changed()
         self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
@@ -802,8 +782,7 @@ class TrainPage(QWidget):
         self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
 
     def prepare_retrain(self, metadata: Dict) -> None:
-        """Pre-select a saved model so the user can continue it on a new
-        dataset."""
+        """Ticks Continue training and selects this saved model so the user can run it on a new labels file. Pass the metadata dict from the Models page."""
         if self._continue_checkbox is None:
             return
         self._refresh_continue_combo()
@@ -852,9 +831,9 @@ class TrainPage(QWidget):
             if self._head_label is not None:
                 self._head_label.setVisible(show_transfer_controls)
 
-    # -- CSV / folder / dataset summary --------------------------------------
+    # After the labels file or folder changes, rebuild the match summary.
 
-    def showEvent(self, event) -> None:  # noqa: D401 - Qt override
+    def showEvent(self, event) -> None:  # noqa: D401  Qt calls this when the page is shown
         super().showEvent(event)
         if (
             self._continue_checkbox is not None
@@ -866,7 +845,7 @@ class TrainPage(QWidget):
         try:
             df = read_labels_file(path)
         except Exception as exc:  # noqa: BLE001
-            # surface any parse failure to the user
+            # Tell the user if the labels file would not parse.
             self._show_status_error(f"Couldn't read label file: {exc}")
             return
 
@@ -922,8 +901,7 @@ class TrainPage(QWidget):
         self._preview_table.resizeColumnsToContents()
 
     def _apply_image_folder(self, folder: str) -> bool:
-        """Set Step 2 from a folder path. Returns False if the folder can't be
-        read."""
+        """Sets the photo folder for step 2. Pass the folder path. You get False if we could not read it."""
         try:
             image_count = len(collect_images(folder))
         except OSError as exc:
@@ -944,8 +922,7 @@ class TrainPage(QWidget):
         return True
 
     def _uses_target_normalisation(self) -> bool:
-        """New runs train on raw %; continued z-scored checkpoints keep that
-        scale."""
+        """True when we should z-score the labels. Fresh runs use raw percents. Continuing an old z-scored checkpoint keeps that scale so the weights still make sense."""
         continuing = bool(
             self._continue_checkbox is not None
             and self._continue_checkbox.isChecked()
@@ -979,8 +956,7 @@ class TrainPage(QWidget):
         }
 
     def _maybe_rebuild_dataset_summary(self) -> None:
-        """Re-match filenames and refresh Step 2/3 after CSV/folder/split
-        changes."""
+        """Rematches filenames and refreshes the summary cards after the labels file, folder, or split changes."""
         if self._csv_dataframe is None or not self._image_dir:
             self._match_card.setVisible(False)
             self._step3_frame.setVisible(False)
@@ -995,7 +971,7 @@ class TrainPage(QWidget):
             val_dataset = RegressionDataset(split="val", **kwargs)
             test_dataset = RegressionDataset(split="test", **kwargs)
         except Exception as exc:  # noqa: BLE001
-            # matching can fail in many ways (bad path, bad CSV, etc.)
+            # Matching can fail on a bad path or a labels file that will not open.
             self._show_status_error(f"Couldn't match images: {exc}")
             self._match_card.setVisible(False)
             self._step3_frame.setVisible(False)
@@ -1067,12 +1043,11 @@ class TrainPage(QWidget):
             distribution[pan] = distribution.get(pan, 0) + 1
         return distribution
 
-    # -- Start-button gating --------------------------------------------------
+    # Grey out Start until labels, photos, and a model name are all there.
 
     def _update_start_button_state(self) -> None:
         if self._thread is not None:
-            # A run is in progress; _set_training_ui_active
-            # manages the button then.
+            # Training is already running. The start button stays disabled until it finishes.
             return
 
         matched_count = (
@@ -1092,7 +1067,7 @@ class TrainPage(QWidget):
         else:
             self._start_button.setToolTip("")
 
-    # -- Status helpers ---------------------------------------------------
+    # Status line under the start button.
 
     def _clear_status(self) -> None:
         self._status_label.setText("")
@@ -1102,7 +1077,7 @@ class TrainPage(QWidget):
         self._status_label.setText(message)
         self._status_label.setVisible(True)
 
-    # -- Training lifecycle ---------------------------------------------------
+    # Start, stop, and clean up a training thread.
 
     def _on_start_training(self) -> None:
         if self._thread is not None:
@@ -1149,7 +1124,7 @@ class TrainPage(QWidget):
             val_dataset = RegressionDataset(split="val", **kwargs)
             test_dataset = RegressionDataset(split="test", **kwargs)
         except Exception as exc:  # noqa: BLE001
-            # surface any dataset-build failure to the user
+            # Tell the user if the dataset would not build.
             self._show_status_error(f"Couldn't prepare dataset: {exc}")
             return
 
@@ -1161,8 +1136,7 @@ class TrainPage(QWidget):
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Load images from disk in worker processes instead of keeping
-        # everything in RAM — see _default_num_workers.
+        # Decode photos in worker processes instead of holding everything in RAM.
         num_workers = _default_num_workers()
         loader_kwargs = {"num_workers": num_workers}
         if num_workers > 0:
@@ -1210,7 +1184,7 @@ class TrainPage(QWidget):
                     architecture=architecture, pretrained=pretrained, head=head
                 )
         except Exception as exc:  # noqa: BLE001
-            # architecture / checkpoint mismatches
+            # Usually a bad architecture name or a checkpoint that will not load.
             self._show_status_error(f"Couldn't load model: {exc}")
             return
 
@@ -1370,7 +1344,7 @@ class TrainPage(QWidget):
             self._start_button.setEnabled(False)
             self._start_button.setToolTip("Training\u2026")
         else:
-            # Re-check enabled/tooltip from current dataset state.
+            # Re-enable Start based on whether we still have a matched dataset.
             self._update_start_button_state()
             if (
                 self._continue_checkbox is not None

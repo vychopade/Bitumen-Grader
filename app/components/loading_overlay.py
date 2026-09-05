@@ -1,10 +1,4 @@
-"""
-Loading overlay.
-
-Dimmed cover with a spinner and optional message for blocking work
-(loading a model, exporting, etc.). Parent it to a page and call
-``show_message`` / ``hide_overlay``.
-"""
+"""A dim overlay with a spinner and a short message for blocking work like loading a model or exporting. Parent it to a page and call show_message or hide_overlay."""
 
 from __future__ import annotations
 
@@ -26,15 +20,7 @@ DEGREES_PER_TICK = 6
 
 
 class LoadingOverlay(QWidget):
-    """Dimmed overlay with a spinning arc.
-
-    Usage::
-
-        overlay = LoadingOverlay(self)
-        overlay.show_message("Loading model\u2026")
-        ...
-        overlay.hide_overlay()
-    """
+    """A dim overlay with a spinning arc and a status line. Parent it to the page you want to block, then call show_message while the work runs."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -52,7 +38,7 @@ class LoadingOverlay(QWidget):
         self.hide()
 
     def show_message(self, message: str = "Loading\u2026") -> None:
-        """Show the overlay over the parent with ``message``."""
+        """Covers the parent and starts the spinner. Pass the status text to show under the arc."""
         self._message = message
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
@@ -61,12 +47,12 @@ class LoadingOverlay(QWidget):
         self._timer.start()
 
     def set_message(self, message: str) -> None:
-        """Update the status text without restarting the spinner."""
+        """Changes the status text without restarting the spinner. Pass the new message."""
         self._message = message
         self.update()
 
     def hide_overlay(self) -> None:
-        """Hide and stop the spinner."""
+        """Hides the overlay and stops the spinner."""
         self._timer.stop()
         self.hide()
 
@@ -83,8 +69,7 @@ class LoadingOverlay(QWidget):
         self._angle = (self._angle + DEGREES_PER_TICK) % 360
         self.update()
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: D401
-        # Qt override
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: D401  Qt calls this whenever the overlay needs a redraw
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), OVERLAY_COLOR)

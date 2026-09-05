@@ -1,4 +1,4 @@
-"""Grade-page widgets: queue, drop zone, range bars, and workers."""
+"""Widgets used only on the Grade page: the queue, drop zone, range bars, and the background workers that grade and export."""
 
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ RANGE_STD_MULTIPLIER = 2.0
 
 
 def _approx_output_range(mean: float, std: float) -> Tuple[float, float]:
-    """Rough training min/max: mean +/- RANGE_STD_MULTIPLIER*std."""
+    """A rough min and max from the training mean plus or minus two standard deviations, clamped to 0-100. Pass mean and std. You get a low, high pair for the range bar."""
     low = max(0.0, mean - RANGE_STD_MULTIPLIER * std)
     high = min(100.0, mean + RANGE_STD_MULTIPLIER * std)
     if high <= low:
@@ -92,12 +92,7 @@ def _approx_output_range(mean: float, std: float) -> Tuple[float, float]:
 def _closest_pan_grade(
     bitumen_value: float, bitumen_mean: float, bitumen_std: float
 ) -> int:
-    """Map predicted Bitumen into one of the four batch numbers (Pan 3–6).
-
-    Labels store Pan as the batch id. There is no saved Bitumen→batch mapping,
-    so we split the model's Bitumen training range into four equal bins and
-    pick which batch the prediction lands in.
-    """
+    """Guesses which pan batch (3 through 6) a predicted bitumen percent looks like. We do not have a saved mapping, so we split the training bitumen range into four equal bins. Pass the prediction plus the train mean and std. You get 3, 4, 5, or 6."""
     low, high = _approx_output_range(bitumen_mean, bitumen_std)
     span = high - low
     fraction = 0.5 if span <= 0 else (bitumen_value - low) / span
@@ -107,19 +102,13 @@ def _closest_pan_grade(
 
 
 class _GradingWorker(QObject):
-    """Run a loaded ``RegressionPredictor`` on one or more images off
-    the UI thread.
-
-    The checkpoint is already loaded by ``MainWindow.set_active_model``; this
-    just keeps inference off the main thread. Used for both "Grade This Image"
-    and "Grade All".
-    """
+    """Runs the already-loaded predictor on one or more photos off the UI thread so the window does not freeze. Used for both Grade This Image and Grade All."""
 
     finished = pyqtSignal(
         list, int
-    )  # [(image_id, result_or_None)], failure_count
+    )  # list of (image_id, result or None), plus how many failed
     failed = pyqtSignal(str)
-    progress = pyqtSignal(int, int)  # done, total
+    progress = pyqtSignal(int, int)  # photos finished so far, total in this job
 
     def __init__(self, predictor: RegressionPredictor, images: List[Any]):
         super().__init__()
@@ -137,7 +126,7 @@ class _GradingWorker(QObject):
             predictions = self._predictor.predict_many(
                 sources, on_progress=self.progress.emit
             )
-        except Exception as exc:  # noqa: BLE001 - surface a single job error
+        except Exception as exc:  # noqa: BLE001  send one error string to the UI
             self.failed.emit(str(exc) or "Grading failed.")
             return
 
@@ -154,7 +143,7 @@ class _GradingWorker(QObject):
 
 
 class _ExportWorker(QObject):
-    """Write graded results to CSV on a background thread."""
+    """Writes the graded table to a CSV on a background thread so a big export does not freeze the window."""
 
     finished = pyqtSignal()
     failed = pyqtSignal(str)
@@ -183,7 +172,7 @@ class _ExportWorker(QObject):
 
 @dataclass
 class _QueueImage:
-    """One queued photo (path on disk) plus its list-row widgets."""
+    """One photo in the grade queue: its path on disk, the list-row widgets, and any result we already have."""
 
     id: int
     path: str
@@ -194,14 +183,14 @@ class _QueueImage:
 
 
 def _wrappable_filename(filename: str) -> str:
-    """Wrap long camera names without splitting the extension (.jpg, .tif)."""
+    """Inserts a wrap hint after underscores and hyphens so long camera names break in the queue without splitting .jpg off the stem."""
     path = Path(filename)
     stem = path.stem.replace("_", "_\u200b").replace("-", "-\u200b")
     return stem + path.suffix
 
 
 class _QueueItemWidget(QWidget):
-    """Queue row: full filename, wrapped to the list width."""
+    """One queue row that shows the full filename, wrapped to the list width."""
 
     def __init__(self, filename: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -252,7 +241,7 @@ class _QueueItemWidget(QWidget):
 
 
 class _QueueList(QListWidget):
-    """Queue list that also accepts dropped image files."""
+    """The photo queue. You can drop image files onto it as well as using the drop zone above."""
 
     files_dropped = pyqtSignal(list)
 
@@ -267,13 +256,12 @@ class _QueueList(QListWidget):
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setSpacing(0)
 
-    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: D401
-        # Qt override
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: D401  Qt calls this when the list resizes
         super().resizeEvent(event)
         self.relayout_rows()
 
     def _usable_row_width(self) -> int:
-        """Width the filename can occupy (overlay scrollbar + item chrome)."""
+        """How wide the filename can be after subtracting the scrollbar. Used so wrap height is right."""
         width = self.viewport().width()
         gutter = self.style().pixelMetric(
             QStyle.PixelMetric.PM_ScrollBarExtent
@@ -281,7 +269,7 @@ class _QueueList(QListWidget):
         return max(40, width - gutter)
 
     def relayout_rows(self) -> None:
-        """Keep each row tall enough for a wrapped filename."""
+        """Stretches each row so a wrapped filename is not clipped."""
         width = self._usable_row_width()
         for index in range(self.count()):
             item = self.item(index)
@@ -311,7 +299,7 @@ class _QueueList(QListWidget):
 
 
 class _ImageDropZone(QFrame):
-    """Drop photos or a folder here, or choose files/folder."""
+    """Dashed area where you drop photos or a folder, with buttons to choose files or a folder instead."""
 
     files_selected = pyqtSignal(list)
 
@@ -402,7 +390,7 @@ class _ImageDropZone(QFrame):
 
 
 class _ClickableBanner(QFrame):
-    """QFrame that emits ``clicked`` on left-click (no-model banner)."""
+    """A frame that acts like a button. Used for the no-model banner so a click can jump you to Models."""
 
     clicked = pyqtSignal()
 
@@ -410,14 +398,14 @@ class _ClickableBanner(QFrame):
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    def mousePressEvent(self, event) -> None:  # noqa: D401 - Qt override
+    def mousePressEvent(self, event) -> None:  # noqa: D401  Qt calls this on a click
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
 
 
 class _AdaptiveImageLabel(QLabel):
-    """QLabel that scales its pixmap to fit."""
+    """A label that keeps the photo scaled to the available space when you resize the window."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -448,7 +436,7 @@ class _AdaptiveImageLabel(QLabel):
 
 
 class _RangeBar(QWidget):
-    """Training-range bar for one output; amber fill up to the prediction."""
+    """A bar showing the training range for one grade, with an amber fill up to the prediction."""
 
     def __init__(
         self,
@@ -469,7 +457,7 @@ class _RangeBar(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
         )
 
-    def paintEvent(self, event) -> None:  # noqa: D401 - Qt override
+    def paintEvent(self, event) -> None:  # noqa: D401  Qt calls this whenever the bar needs a redraw
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -555,7 +543,7 @@ class _RangeBar(QWidget):
 
 
 class _PanGradeCard(QFrame):
-    """Closest-batch indicator; border colour follows the batch number."""
+    """Shows the closest pan batch. The left border colour follows the batch number so 3 through 6 are easy to tell apart."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -585,9 +573,7 @@ class _PanGradeCard(QFrame):
         layout.addWidget(secondary_label)
 
     def _apply_frame_style(self, color: str) -> None:
-        # Scoped to #panGradeCard -- QLabel is a QFrame subclass in Qt, so a
-        # bare "QFrame" selector would also draw this left-border stripe
-        # around the nested title/secondary QLabels, not just the card.
+        # Target the card by id. QLabel is a QFrame in Qt, so a bare QFrame rule would stripe the nested labels too.
         self.setStyleSheet(
             f"QFrame#panGradeCard {{ background-color: {BACKGROUND_COLOR};"
             f" border-radius: 6px;"

@@ -1,10 +1,4 @@
-"""
-Training progress panel.
-
-Live feedback for a training run: epoch bar, metric cards, sum-deviation
-check, loss/R² charts, timestamped log, and a done / early-stop banner.
-Used by TrainPage; no dependency on MainWindow.
-"""
+"""Live training progress: epoch bar, metric cards, loss and R squared charts, a timestamped log, and a done or early-stop banner. TrainPage owns this. It does not talk to the main window."""
 
 from __future__ import annotations
 
@@ -50,12 +44,7 @@ PLACEHOLDER_VALUE = "\u2014"
 
 
 class ProgressPanel(QWidget):
-    """Live training progress display.
-
-    Call ``reset`` before a run, ``update_progress`` each epoch,
-    optionally ``note_early_stopped``, then ``show_completion`` or
-    ``show_early_stopped_banner``.
-    """
+    """The live training panel. Call reset before a run, update_progress each epoch, then show_completion or show_early_stopped_banner when it finishes."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -93,7 +82,7 @@ class ProgressPanel(QWidget):
 
         self._build_ui()
 
-    # -- UI construction ---------------------------------------------------
+    # Build the widgets and lay them out.
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -279,9 +268,7 @@ class ProgressPanel(QWidget):
         self._completion_banner = QFrame()
         self._completion_banner.setObjectName("completionBanner")
         self._completion_banner.setStyleSheet(
-            # Scoped to #completionBanner -- QLabel is a QFrame subclass in
-            # Qt, so a bare "QFrame" selector would also draw this border
-            # around the nested message label, not just the banner.
+            # Target the banner by id. QLabel is a QFrame in Qt, so a bare QFrame rule would also box the message inside.
             f"QFrame#completionBanner {{ background-color: {SUCCESS_BG};"
             f" border: 1px solid {SUCCESS_COLOR};"
             f"border-radius: 3px; }}"
@@ -306,9 +293,7 @@ class ProgressPanel(QWidget):
         self._early_stop_banner = QFrame()
         self._early_stop_banner.setObjectName("earlyStopBanner")
         self._early_stop_banner.setStyleSheet(
-            # Scoped to #earlyStopBanner -- QLabel is a QFrame subclass in
-            # Qt, so a bare "QFrame" selector would also draw this border
-            # around the nested message label, not just the banner.
+            # Target the banner by id. QLabel is a QFrame in Qt, so a bare QFrame rule would also box the message inside.
             f"QFrame#earlyStopBanner {{ background-color: {WARNING_BG};"
             f" border: 1px solid {ACCENT_COLOR};"
             f"border-radius: 3px; }}"
@@ -329,10 +314,10 @@ class ProgressPanel(QWidget):
         self._early_stop_banner.setVisible(False)
         return self._early_stop_banner
 
-    # -- Public API ----------------------------------------------------------
+    # Methods TrainPage calls during a run.
 
     def reset(self, total_epochs: int, patience: int) -> None:
-        """Clear the panel and ready it for a new run."""
+        """Clears the charts and log and sets the epoch bar for a new run. Pass how many epochs and the patience value."""
         self._total_epochs = total_epochs
         self._patience = patience
         self._best_val_loss = float("inf")
@@ -391,12 +376,11 @@ class ProgressPanel(QWidget):
         val_sum_deviation: float,
         val_r2_dict: Optional[Dict[str, float]] = None,
     ) -> None:
-        """Refresh displays after one finished epoch."""
+        """Redraws the metrics, charts, and log after one epoch. Pass the epoch number, losses, MAE, sum deviation, and R squared."""
         self._epoch_label.setText(f"Epoch {epoch} / {self._total_epochs}")
         self._progress_bar.setValue(epoch)
 
-        # Same best-val / patience logic as RegressionTrainer, so the label
-        # matches.
+        # Same best-val and patience counting as the trainer, so the label matches what the loop is doing.
         if val_loss < self._best_val_loss:
             self._best_val_loss = val_loss
             self._patience_counter = 0
@@ -452,11 +436,11 @@ class ProgressPanel(QWidget):
         )
 
     def note_early_stopped(self, epoch: int) -> None:
-        """Log that patience ran out (before ``finished``)."""
+        """Writes an early-stop line to the log. Call this when patience ran out, before the finished signal lands."""
         self.append_log(f"Early stop at epoch {epoch} (patience used up).")
 
     def append_log(self, message: str) -> None:
-        """Append a timestamped log line."""
+        """Adds a timestamped line to the log. Pass the message text."""
         if self._log_view is None:
             return
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -470,7 +454,7 @@ class ProgressPanel(QWidget):
         best_val_r2: Optional[Dict[str, float]] = None,
         test_r2: Optional[Dict[str, float]] = None,
     ) -> None:
-        """Green "training complete" banner after a successful save."""
+        """Shows the green training-complete banner after a successful save. Pass the model name and the val and test scores."""
         self._early_stop_banner.setVisible(False)
         text = (
             f'Training complete \u2014 "{model_name}" saved.\n'
@@ -494,7 +478,7 @@ class ProgressPanel(QWidget):
         best_val_r2: Optional[Dict[str, float]] = None,
         test_r2: Optional[Dict[str, float]] = None,
     ) -> None:
-        """Amber early-stop banner instead of the green one."""
+        """Shows the amber early-stop banner instead of the green one. Pass the epoch we stopped on and the val and test scores."""
         self._completion_banner.setVisible(False)
         text = (
             f"Early stop at epoch {epoch}.\n"
@@ -526,7 +510,7 @@ class ProgressPanel(QWidget):
             f"\u00b1{mae.get('Water', 0.0):.2f}%"
         )
 
-    # -- Internal helpers --------------------------------------------------
+    # Chart drawing helpers.
 
     def _redraw_loss_chart(self) -> None:
         style_axes(

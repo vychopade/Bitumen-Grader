@@ -1,4 +1,4 @@
-"""Matplotlib axis styling shared by training charts and model cards."""
+"""Paints matplotlib axes in the same dark colours as the rest of the UI."""
 
 from __future__ import annotations
 

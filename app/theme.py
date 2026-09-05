@@ -1,14 +1,10 @@
-"""Shared color tokens and widget stylesheets.
-
-Aim for a working lab tool, not a product landing page: small radii, hairline
-borders, and one accent action per screen.
-"""
+"""Colours and button styles shared by the pages. Kept simple on purpose so it feels like a lab tool, not a website."""
 
 from __future__ import annotations
 
 from app.constants import SUM_DEVIATION_OK, SUM_DEVIATION_TIGHT
 
-# Palette — matches assets/style.qss
+# Same colours as assets/style.qss so Python-built widgets match the stylesheet.
 BACKGROUND_COLOR = "#1C1E22"
 SURFACE_COLOR = "#24262B"
 SURFACE_HOVER_COLOR = "#2C2F35"
@@ -35,7 +31,7 @@ SUCCESS_COLOR = "#4A9A6A"
 SUCCESS_BG = "#1E2A22"
 WARNING_BG = "#2A2618"
 
-# Chart series
+# Line colours for the water, solids, bitumen, and validation series.
 WATER_LINE_COLOR = "#6A8FB0"
 SOLIDS_LINE_COLOR = "#4A9A6A"
 BITUMEN_LINE_COLOR = "#C9A227"
@@ -89,7 +85,7 @@ def danger_outline_button_qss() -> str:
 
 
 def link_button_qss(*, color: str = TEXT_SECONDARY) -> str:
-    """Plain text control — used instead of a second outlined button."""
+    """Styles a button that looks like a text link so we do not stack a second outlined button. Pass a colour if you want something other than the default grey."""
     return (
         f"QPushButton {{ background: transparent; color: {color};"
         f" border: none;"
@@ -101,8 +97,8 @@ def link_button_qss(*, color: str = TEXT_SECONDARY) -> str:
     )
 
 
-# QLabel is a QFrame subclass, so a bare "QFrame { border }" rule also wraps
-# every label. Re-assert labels as plain text after any such rule.
+# QLabel inherits QFrame, so a blanket "QFrame { border }" rule would box every
+# label. Stick this after those rules so labels stay plain text.
 LABEL_RESET_QSS = "QLabel { border: none; background: transparent; }"
 
 
@@ -128,7 +124,7 @@ def card_qss(*, inset: bool = False) -> str:
 
 
 def sum_deviation_color(deviation: float) -> str:
-    """Green if the composition is tight, amber if usable, red if off."""
+    """Picks a colour for how far the three grades are from 100 percent. Green is tight, amber is still usable, red means treat the photo carefully. Pass the absolute deviation and you get a hex colour back."""
     if deviation < SUM_DEVIATION_TIGHT:
         return SUCCESS_COLOR
     if deviation <= SUM_DEVIATION_OK:

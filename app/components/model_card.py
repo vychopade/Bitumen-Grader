@@ -1,9 +1,4 @@
-"""
-Model card.
-
-One saved model: name, date, architecture, R², plus load / retrain /
-details / delete. Details expands R²/loss curves and output stats.
-"""
+"""One saved-model card: name, date, architecture, R squared, plus load, retrain, details, and delete. Details expands the curves and output stats."""
 
 from __future__ import annotations
 
@@ -56,12 +51,7 @@ from app.utils.model_io import (
 
 
 class ModelCard(QFrame):
-    """Summary card for one saved model, with load / details / delete.
-
-    ``metadata`` matches ``list_saved_models`` (JSON fields plus
-    ``model_path`` / ``metadata_path``). The card never touches disk; it
-    only emits ``load_requested`` / ``delete_requested``.
-    """
+    """Summary card for one saved checkpoint. The metadata dict is the same shape list_saved_models returns. The card never touches disk. It just emits load_requested, retrain_requested, or delete_requested."""
 
     load_requested = pyqtSignal(dict)
     delete_requested = pyqtSignal(dict)
@@ -89,7 +79,7 @@ class ModelCard(QFrame):
         self._build_ui()
         self.set_active(is_active)
 
-    # -- UI construction ---------------------------------------------------
+    # Build the widgets and lay them out.
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -177,7 +167,7 @@ class ModelCard(QFrame):
         return row
 
     def _build_accuracy_block(self) -> QWidget:
-        """Headline R² (test, else validation) plus the three outputs."""
+        """Headline R squared, preferring test over validation, plus the three per-output scores."""
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 2, 0, 2)
@@ -494,10 +484,10 @@ class ModelCard(QFrame):
 
         return table
 
-    # -- Public API ----------------------------------------------------------
+    # Load state and the details toggle.
 
     def set_active(self, is_active: bool) -> None:
-        """Mark this card as the loaded model."""
+        """Turns on the Loaded badge and accent border when this is the model currently in use."""
         self._is_active = is_active
         self._active_badge.setVisible(is_active)
 

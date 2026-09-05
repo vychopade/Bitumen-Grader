@@ -1,11 +1,17 @@
-Hey. This is BitumenGrader. You give it photos of froth or bitumen samples and it estimates three numbers: water percent, solids percent, and bitumen percent. It is a quick look from a picture, not a replacement for the lab.
+Hey. This is BitumenGrader. You feed it photos of bitumen or froth samples and a CNN estimates how much water, solids, and bitumen is in each one. There is a desktop window for it, built with Qt, so you are not stuck in a terminal once it is running.
 
-From the project folder run pip install -r requirements.txt. That pulls in PyTorch, the desktop UI, and the image libraries. Then run python main.py. The window has Train, Grade, and Models. Train is where you load a labels file (Image, Pan, Water, Solids, Bitumen) and a folder of matching photos. Grade is where you drop new photos once a model is loaded. Saved checkpoints land in models/.
+You need Python 3.8 or higher. Open a terminal and run "python --version" to see what you have. If that command fails or the version is too old, get an installer from python.org. On Windows, check "Add Python to PATH" during setup or the next commands will not work.
 
-To swap the CNN, open config.py and change ACTIVE_MODEL. It is just a string. Set it to a name that exists in MODEL_REGISTRY in models/__init__.py, for example cnn_basic. That is the only line you need to edit. If you write a new network, register it in that dictionary first, then point ACTIVE_MODEL at it.
+To install what the app needs, open a terminal and go to the project folder with "cd path/to/Bitumen-Grader". Then run "pip install -r requirements.txt". That pulls in PyTorch, Qt, and the image libraries. You only have to do this once unless someone adds a package later. If the machine says pip is not found, try "pip3" instead. Same file, just a different command name on some setups.
 
-Put sample photos in their own folder, jpg png or tif is fine, nested folders are okay. On the Train page, point the app at that folder plus your labels table. The Image column should match the file names.
+From that same folder run "python main.py". A desktop window should open. If nothing appears, a package from the install step is probably missing. Run the pip line again and watch for errors.
 
-The three outputs are percentages. They should add up to about 100. If they are off by more than a few percent, treat that photo as shaky. R squared on a saved model is how well it tracked the lab labels. Closer to 1 is better. Zero is no better than guessing the average. Negative means it did worse than that. MAE is the typical error in percentage points, so smaller is better.
+Sample images belong in the data/ folder as JPG or PNG. The app looks there on its own, so you do not need to edit paths just to try a few photos.
 
-If something will not start, you are probably not in the project folder or the pip install did not finish. Training is slow on CPU. That is normal.
+Each image gets three grades: water, solids, and bitumen. Each value is between 0 and 1 and is the model's guess at how much of that component is in the sample. They should add up to about 1. If they are way off that, the photo is a bad fit or the model did not learn much.
+
+To swap which CNN runs, open config.py and find ACTIVE_MODEL. Change that string to the name of the model you want. The legal names are in models/__init__.py, in MODEL_REGISTRY. If you type a name that is not in there, the app raises a clear error and tells you so. That is intentional, not a crash you have to debug.
+
+If you want to plug in your own network, read HOW_TO_ADD_MODEL.md. It walks through it. You add one model file and one line in the registry, then point ACTIVE_MODEL at the new name.
+
+A few things that usually go wrong. "Python not found" means Python is not on your PATH, so fix the install and the checkbox on Windows. A missing module error means "pip install -r requirements.txt" did not finish, so run it again and stay in the project folder. Empty output usually means data/ has no images in it yet. Drop a few JPG or PNG files in there and run it again.

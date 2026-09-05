@@ -1,4 +1,4 @@
-"""Start the BitumenGrader PyQt6 app."""
+"""Opens the BitumenGrader desktop window."""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ ORGANIZATION_NAME = "BitumenGrader"
 ORGANIZATION_DOMAIN = "bitumengrader.local"
 
 _STYLESHEET_PATH = ASSETS_DIR / "style.qss"
-#
+
 
 def _ensure_models_directory() -> None:
-    """Make sure models/ exists so a fresh checkout can run."""
+    """Creates the models folder if it is missing so a fresh checkout can save checkpoints."""
     try:
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -27,11 +27,7 @@ def _ensure_models_directory() -> None:
 
 
 def _load_stylesheet() -> str:
-    """Load style.qss and fill in {ASSETS_DIR} for absolute asset urls.
-
-    Qt resolves relative url()s against the cwd, not the .qss file, so we
-    use absolute paths so it works no matter where you launch from.
-    """
+    """Reads style.qss and replaces {ASSETS_DIR} with a real path. Qt looks up url() against the working directory, so baking in an absolute path means the logo and checkbox image still load no matter where you launch from."""
     if not _STYLESHEET_PATH.exists():
         return ""
     try:
@@ -42,11 +38,7 @@ def _load_stylesheet() -> str:
 
 
 def _install_exception_hook() -> None:
-    """Show unhandled errors in a dialog instead of silently dying.
-
-    Still calls the previous hook afterward. App keeps running so one bad
-    page error doesn't kill the whole tool.
-    """
+    """Pops up a dialog for unexpected errors instead of dying silently. The old exception hook still runs, and the window stays open so one bad page does not kill the whole tool."""
     previous_hook = sys.excepthook
 
     def _handle_exception(
@@ -76,7 +68,7 @@ def _install_exception_hook() -> None:
             box.setStandardButtons(QMessageBox.StandardButton.Ok)
             box.exec()
         except Exception:  # noqa: BLE001
-            # don't let the error handler crash too
+            # If the dialog itself fails, swallow it so we do not crash twice.
             pass
 
     sys.excepthook = _handle_exception
@@ -97,7 +89,7 @@ def main() -> int:
     _install_exception_hook()
     _ensure_models_directory()
 
-    # Import after QApplication exists (Qt startup order).
+    # Widgets need a QApplication already running, so import the window here.
     from app.main_window import MainWindow
 
     window = MainWindow()

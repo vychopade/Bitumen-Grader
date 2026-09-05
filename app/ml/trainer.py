@@ -1,10 +1,4 @@
-"""Paper-faithful training loop for froth-image regression.
-
-Prince & Prasad (Table 2): Adam, constant LR, MSE on process percentages,
-100 epochs, batch 32. Fine-tuning / baseline use 1e-4; frozen feature
-extraction uses 1e-3. The loop reports R² (the study's regression metric)
-and 3-bin equal-frequency accuracy (the study's classification endpoint).
-"""
+"""Training loop that follows the paper: Adam, constant learning rate, MSE on the three percents, 100 epochs, batch 32. Fine-tune and baseline use 1e-4. Frozen feature extraction uses 1e-3. Each epoch we log R squared and 3-bin accuracy so you can compare to the study."""
 
 from __future__ import annotations
 
@@ -26,11 +20,11 @@ from app.ml.recipe import CLS_BINS, WEIGHT_DECAY, learning_rate_for_adaptation
 @dataclass
 class RegressionTrainingResult:
     best_val_loss: float
-    best_val_mae: dict  # {"Water": x, "Solids": x, "Bitumen": x}
+    best_val_mae: dict  # water, solids, bitumen mean absolute error
     final_epoch: int
     stopped_early: bool
-    training_history: list  # list of per-epoch dicts
-    output_stats: dict  # from dataset.get_output_stats()
+    training_history: list  # one dict per epoch for the charts
+    output_stats: dict  # means and stds from the train split
     normalise_targets: bool
     test_mae: Optional[dict] = None
     test_loss: Optional[float] = None
@@ -42,27 +36,14 @@ class RegressionTrainingResult:
 
 
 class RegressionTrainer(QObject):
-    """Train/validate a BitumenRegressor. Emits progress each epoch.
+    """Runs train and val on a BitumenRegressor and emits progress each epoch. Adam with one constant learning rate, MSE on the raw percents, and we keep the checkpoint with the best mean val R squared. scratch and ft train the whole net. fe freezes the backbone. patience is 0 by default so we run all epochs unless the user hits Stop."""
 
-    Follows the study protocol:
-      * Adam with a single constant learning rate (no cosine, no per-layer LRs)
-      * MSE on the process percentages (no composition penalty)
-      * ``adaptation`` ``scratch`` / ``ft`` trains the whole net;
-        ``fe`` freezes the backbone for the entire run
-      * best checkpoint is the highest mean validation R²
-      * full ``num_epochs`` unless the user stops (``patience`` is 0
-        by default)
-
-    Optional ``patience`` > 0 restores the older early-stop behaviour
-    for tests.
-    """
-
-    # epoch, train_loss, val_loss, val_mae_dict, val_sum_deviation, val_r2_dict
+    # Fired each epoch with losses, MAE, sum deviation, and R squared.
     progress = Signal(int, float, float, dict, float, dict)
-    # RegressionTrainingResult
+    # Hands back a RegressionTrainingResult when the loop finishes.
     finished = Signal(object)
     error = Signal(str)
-    # epoch when early stopping fired
+    # Epoch number if we stopped early.
     early_stopped = Signal(int)
 
     def __init__(
@@ -111,8 +92,7 @@ class RegressionTrainer(QObject):
         self.stop_requested = False
 
     def request_stop(self) -> None:
-        """Ask the loop to stop after the current epoch."""
-        self.stop_requested = True
+        """Sets a flag so the loop finishes the current epoch and then quits. You do not pass anything."""
 
     def _build_optimizer(self):
         params = [
@@ -125,7 +105,7 @@ class RegressionTrainer(QObject):
         )
 
     def _denormalise_batch(self, batch: torch.Tensor) -> torch.Tensor:
-        """Undo z-scoring for a (N, 3) [Water, Solids, Bitumen] batch."""
+        """Turns a z-scored batch back into percents using the train-set means and stds. Pass a tensor of shape N by 3. You get the same shape in percent."""
         denormalised = torch.zeros_like(batch)
         for index, name in enumerate(OUTPUT_NAMES):
             mean = self.output_stats[name]["mean"]
@@ -139,8 +119,7 @@ class RegressionTrainer(QObject):
         return batch
 
     def _evaluate_loader(self, loader: DataLoader, loss_fn: nn.Module):
-        """Eval mode: (mean_loss, mae_dict, sum_deviation, r2_dict,
-        cls_acc)."""
+        """Runs the model on a loader without updating weights. Pass a DataLoader and a loss function. You get mean loss, MAE, how far the three grades miss 100, R squared, and 3-bin accuracy."""
         self.model.eval()
         running_loss = 0.0
         batches = 0
@@ -184,7 +163,7 @@ class RegressionTrainer(QObject):
 
     @staticmethod
     def _r2_dict(preds: torch.Tensor, truths: torch.Tensor) -> dict:
-        """Per-output R² on percentages (paper regression metric)."""
+        """R squared for water, solids, and bitumen on percent-scale predictions. Pass predicted and true tensors. You get a dict of three scores."""
         if len(preds) < 2:
             return {name: 0.0 for name in OUTPUT_NAMES}
         ss_res = ((truths - preds) ** 2).sum(dim=0)
@@ -195,7 +174,7 @@ class RegressionTrainer(QObject):
         }
 
     def _cls_acc_dict(self, preds: torch.Tensor, truths: torch.Tensor) -> dict:
-        """3-bin equal-frequency accuracy (paper classification endpoint)."""
+        """How often predicted and true values land in the same low/mid/high bin, using the train-set edges. Pass predicted and true tensors. You get a dict of three accuracies."""
         acc = {}
         if len(preds) == 0:
             return {name: 0.0 for name in OUTPUT_NAMES}
@@ -245,8 +224,7 @@ class RegressionTrainer(QObject):
             final_epoch = 0
             stopped_early = False
 
-            # Keep the weights with the best mean validation R², not
-            # necessarily the last epoch.
+            # Save the weights from the epoch with the best mean val R squared, not just the last one.
             for epoch in range(1, self.num_epochs + 1):
                 if self.stop_requested:
                     break
@@ -376,6 +354,6 @@ class RegressionTrainer(QObject):
             self.finished.emit(result)
 
         except Exception as exc:  # noqa: BLE001
-            # show any training failure in the UI
+            # Push the error string to the UI so the user sees why training died.
             self.error.emit(str(exc))
             return

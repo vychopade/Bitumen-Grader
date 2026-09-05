@@ -1,10 +1,4 @@
-"""
-Main window for BitumenGrader.
-
-Sidebar + stacked pages (Train, Grade, Models). Owns the app-wide
-``active_model`` (path, metadata, ready ``RegressionPredictor``) and
-broadcasts ``active_model_changed`` when it changes.
-"""
+"""The main BitumenGrader window. Sidebar on the left, Train, Grade, and Models stacked on the right. This class owns the loaded model and tells the pages when it changes."""
 
 from __future__ import annotations
 
@@ -53,20 +47,19 @@ _FALLBACK_FONT_FAMILIES = (
     "Ubuntu",
 )
 
-#: (key, label, page class) for each sidebar item.
+# Each sidebar button: key, label, and the page class to open.
 _NAV_ITEMS = [
     ("train", "Train", TrainPage),
     ("grade", "Grade", GradePage),
     ("models", "Models", ModelsPage),
 ]
 
-#: Alt+letter shortcuts for sidebar nav.
+# Alt plus this letter jumps to that sidebar page.
 NAV_SHORTCUT_LETTERS = {"train": "T", "grade": "G", "models": "M"}
 
 
 def _resolve_font_family() -> str:
-    """Use a common system sans-serif. Skip Inter — it reads as a product
-    site."""
+    """Picks a plain system font so the UI does not look like a marketing site. Inter was too polished for a lab tool. You get a family name that is actually installed."""
     families = set(QFontDatabase.families())
     for fallback in _FALLBACK_FONT_FAMILIES:
         if fallback in families:
@@ -75,7 +68,7 @@ def _resolve_font_family() -> str:
 
 
 class _Sidebar(QWidget):
-    """Left nav: page names and the active model."""
+    """Left sidebar with the page names and a link that shows which model is loaded."""
 
     nav_selected = pyqtSignal(int)
     models_requested = pyqtSignal()
@@ -138,14 +131,14 @@ class _Sidebar(QWidget):
         self.nav_selected.emit(index)
 
     def set_active_index(self, index: int) -> None:
-        """Mark the nav button at ``index`` as checked."""
+        """Checks the sidebar button for this page index so it looks selected. Pass the 0-based index."""
         if 0 <= index < len(self._nav_buttons):
             self._nav_buttons[index].setChecked(True)
 
     def set_active_model_label(
         self, display_name: Optional[str], r2_headline: str = ""
     ) -> None:
-        """Show the loaded model name, or 'No model'."""
+        """Shows the loaded model name at the bottom of the sidebar, or No model if nothing is loaded. Pass the display name and an optional R squared headline for the tooltip."""
         if self._status_button is None:
             return
         if display_name:
@@ -166,9 +159,9 @@ class _Sidebar(QWidget):
 
 
 class MainWindow(QMainWindow):
-    """BitumenGrader shell: sidebar + stacked pages."""
+    """The outer window: sidebar plus the stacked Train, Grade, and Models pages."""
 
-    #: Fired when ``active_model`` changes (dict with path/metadata, or None).
+    # Fires when the loaded model changes. The payload is the active_model dict, or None.
     active_model_changed = pyqtSignal(object)
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -181,7 +174,7 @@ class MainWindow(QMainWindow):
         self._font_family = _resolve_font_family()
         self._apply_base_font()
 
-        #: Active model: {"path", "metadata", "predictor"} or None.
+        # Loaded model dict with path, metadata, and predictor, or None.
         self.active_model: Optional[Dict[str, Any]] = None
 
         self._pages: List[QWidget] = []
@@ -235,14 +228,14 @@ class MainWindow(QMainWindow):
         self.navigate_to_index(index)
 
     def navigate_to_index(self, index: int) -> None:
-        """Show the sidebar page at ``index`` and mark that nav item active."""
+        """Switches to the sidebar page at this index and lights up that nav button. Pass 0, 1, or 2."""
         if index < 0 or index >= self._stack.count():
             return
         self._stack.setCurrentIndex(index)
         self._sidebar.set_active_index(index)
 
     def navigate_to(self, page_key: str) -> None:
-        """Show a sidebar page by key (``train``, ``grade``, ``models``)."""
+        """Opens a page by name. Pass train, grade, or models."""
         keys = [item[0] for item in _NAV_ITEMS]
         try:
             self.navigate_to_index(keys.index(page_key))
@@ -250,7 +243,7 @@ class MainWindow(QMainWindow):
             return
 
     def page_for(self, page_key: str) -> Optional[QWidget]:
-        """Return the stacked page for ``page_key``, or ``None``."""
+        """Looks up a stacked page by name. Pass train, grade, or models. You get the widget, or None if the key is unknown."""
         keys = [item[0] for item in _NAV_ITEMS]
         try:
             index = keys.index(page_key)
@@ -265,18 +258,7 @@ class MainWindow(QMainWindow):
         model_path: Optional[str],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Set or clear the active model; update sidebar + pages.
-
-        Loads the checkpoint into a ``RegressionPredictor`` up front so Grade
-        and Models can rely on ``active_model`` already having a usable
-        predictor.
-
-        Args:
-            model_path: Path to the ``.pt`` file, or ``None`` to clear.
-            metadata: Model metadata (name, MAE, ``output_stats``, etc.).
-
-        Load failures show a dialog and leave the previous model unchanged.
-        """
+        """Loads a checkpoint into a predictor and tells the sidebar and pages. Pass the .pt path and its metadata, or None to clear. If the file will not load we show a dialog and leave the previous model alone."""
         if model_path is None:
             self.active_model = None
             self._sidebar.set_active_model_label(None)
@@ -288,7 +270,7 @@ class MainWindow(QMainWindow):
         try:
             predictor = RegressionPredictor(model_path, metadata)
         except Exception as exc:  # noqa: BLE001
-            # surface any load failure to the user
+            # Show why the checkpoint failed so the previous model stays loaded.
             QMessageBox.critical(
                 self,
                 "Model Load Failed",
@@ -314,7 +296,7 @@ class MainWindow(QMainWindow):
         self.active_model_changed.emit(self.active_model)
 
     def _update_window_title(self) -> None:
-        """Window title includes the active model name, if any."""
+        """Puts the loaded model name in the window title, or says no model is loaded."""
         if self.active_model:
             metadata = self.active_model.get("metadata") or {}
             name = (
@@ -326,7 +308,7 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{WINDOW_TITLE_BASE} \u2014 No Model Loaded")
 
     def center_on_screen(self) -> None:
-        """Center this window on the current (or primary) screen."""
+        """Moves this window onto the center of the current screen, or the primary screen if we cannot tell."""
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             return

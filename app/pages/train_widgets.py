@@ -1,4 +1,4 @@
-"""Train-page widgets: CSV drop zone and dataset summary cards."""
+"""Widgets used only on the Train page: the labels drop zone, the photo-folder drop zone, and the two summary cards."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ MAX_UNMATCHED_PREVIEW = 200
 
 
 def _drop_zone_label(text: str, *, primary: bool) -> QLabel:
-    """Centered wrapping label that shrinks to the drop-zone width."""
+    """Builds a centered wrapping label for the drop zones. Pass the text and whether it is the bold title. You get a QLabel that shrinks with the zone."""
     label = QLabel(text)
     label.setWordWrap(True)
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -59,7 +59,7 @@ def _drop_zone_label(text: str, *, primary: bool) -> QLabel:
 
 
 class _DropZoneFrame(QFrame):
-    """Dashed target whose height follows wrapped title/subtitle text."""
+    """Dashed drop target whose height grows with the wrapped title and subtitle instead of staying a fixed box."""
 
     def hasHeightForWidth(self) -> bool:
         return True
@@ -72,7 +72,7 @@ class _DropZoneFrame(QFrame):
 
 
 class _CsvDropZone(_DropZoneFrame):
-    """Dashed drop area for the training CSV, plus a Browse button."""
+    """Dashed area where you drop the training labels file, with a Browse button if you would rather pick it."""
 
     file_selected = pyqtSignal(str)
 
@@ -134,7 +134,7 @@ class _CsvDropZone(_DropZoneFrame):
 
 
 class _FolderDropZone(_DropZoneFrame):
-    """Drop a photo folder (or photos) here, or choose a folder."""
+    """Dashed area where you drop a photo folder, or individual photos, or click to choose a folder."""
 
     folder_selected = pyqtSignal(str)
 
@@ -205,7 +205,7 @@ class _FolderDropZone(_DropZoneFrame):
 
 
 class _MatchSummaryCard(QFrame):
-    """Match count plus expandable unmatched / invalid-row lists."""
+    """Shows how many labels matched a photo, with expandable lists of unmatched names and invalid rows."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -382,7 +382,7 @@ class _MatchSummaryCard(QFrame):
 
 
 class _DatasetSummaryCard(QFrame):
-    """Sample counts, output ranges, and pan-grade bars."""
+    """Shows train/val/test counts, the water/solids/bitumen ranges, and how many photos sit in each pan batch."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)

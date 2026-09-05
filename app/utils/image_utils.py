@@ -1,4 +1,4 @@
-"""Shared image resize / normalize helpers for train and inference."""
+"""Resize and normalize photos the same way for training and grading."""
 
 from __future__ import annotations
 
@@ -11,13 +11,12 @@ from torchvision.transforms import InterpolationMode
 
 from app.ml.recipe import IMAGE_SIZE
 
-# 256×256×3 for new models (paper Table 2). Legacy ResNet-18 checkpoints used
-# 224.
+# New models take 256 by 256. Old ResNet-18 checkpoints were trained at 224.
 LEGACY_IMAGE_SIZE = 224
 _INTERPOLATION = InterpolationMode.BILINEAR
 
-# Same ImageNet mean/std used for transfer backbones; also applied to the
-# baseline so train/val/inference share one preprocessing pipeline.
+# ImageNet mean and std. Transfer backbones expect this, and we use the same
+# numbers on the baseline so train, val, and grading all see the same pixels.
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
@@ -37,12 +36,7 @@ def load_rgb_image(
     *,
     max_decode_edge: Optional[int] = None,
 ) -> Image.Image:
-    """Load a photo as RGB, honouring EXIF orientation when present.
-
-    ``max_decode_edge`` asks JPEG (and similar) decoders for a smaller bitmap
-    so 12MP camera files are not fully expanded just to grade at 256×256.
-    Preview callers omit it and get the original pixels.
-    """
+    """Opens a photo as RGB and respects EXIF rotation when it is there. Pass a path or a PIL image. If you set max_decode_edge, big JPEGs are downsampled while decoding so we do not expand a 12 megapixel file just to grade at 256 pixels."""
     if isinstance(source, Image.Image):
         image = _as_rgb_oriented(source)
         if max_decode_edge:
@@ -65,12 +59,7 @@ def load_rgb_image(
 
 
 def cap_long_edge(image: Image.Image, max_edge: int) -> Image.Image:
-    """Shrink huge camera files before the square resize (keeps aspect ratio).
-
-    Final ``image_size`` × ``image_size`` conversion still happens in
-    ``standardize_to_model_size``. Skipping this step would decode 12MP photos
-    every epoch.
-    """
+    """Shrinks huge camera files before the square resize, keeping the aspect ratio. Pass the image and a max edge length. You get a smaller PIL image back. Skipping this would decode 12 megapixel photos every epoch."""
     width, height = image.size
     longest = max(width, height)
     if longest <= max_edge or max_edge <= 0:
@@ -83,11 +72,7 @@ def cap_long_edge(image: Image.Image, max_edge: int) -> Image.Image:
 def standardize_to_model_size(
     image: Image.Image, image_size: int = IMAGE_SIZE
 ) -> Image.Image:
-    """RGB square of ``image_size``×``image_size`` (paper Table 2).
-
-    Phone, crop, and thumbnail photos all become the same canvas before
-    training or grading. Non-square sources are stretched to fit.
-    """
+    """Stretches the photo to a square of image_size by image_size so phone shots, crops, and thumbnails all hit the same canvas. Pass a PIL image and the target size. You get an RGB square back."""
     if image.mode != "RGB":
         image = image.convert("RGB")
     target = (int(image_size), int(image_size))
@@ -102,13 +87,7 @@ def prepare_image(
     *,
     square: bool = True,
 ) -> Image.Image:
-    """RGB image ready for train/eval transforms: EXIF-corrected, size-capped.
-
-    When ``square`` is True (new models), the photo is also resized to
-    ``image_size``×``image_size`` here so every tensor starts from the same
-    geometry. Legacy ResNet-18 eval keeps ``square=False`` so CenterCrop(224)
-    can run on a 256 short-edge image.
-    """
+    """Gets a photo ready for the train or eval transforms: EXIF-corrected and size-capped. Pass a path or image and the model size. If square is True we resize to that size here. Old ResNet-18 eval leaves square False so CenterCrop can still run on a 256 short-edge image."""
     max_edge = max(int(image_size) * 2, 512)
     image = load_rgb_image(source, max_decode_edge=max_edge)
     if square:
@@ -117,18 +96,14 @@ def prepare_image(
 
 
 def _square_resize(image_size: int) -> transforms.Resize:
-    """Force every photo to the model's square input, any source resolution."""
+    """Builds a torchvision Resize that forces every photo to the model's square input, whatever resolution it started at."""
     return transforms.Resize(
         (image_size, image_size), interpolation=_INTERPOLATION
     )
 
 
 def build_train_transforms(image_size: int = IMAGE_SIZE) -> transforms.Compose:
-    """Resize to the study input (256×256) with only orientation flips.
-
-    Froth signal lives in colour, texture, and bubble packing, so colour jitter
-    and random zoom are omitted — they erase the cues the model needs.
-    """
+    """Training transforms: square resize plus left-right and up-down flips only. Colour jitter and random zoom wipe out froth texture so we skip them. Pass the image size. You get a Compose you can call on a PIL image."""
     return transforms.Compose(
         [
             _square_resize(image_size),
@@ -143,12 +118,7 @@ def build_train_transforms(image_size: int = IMAGE_SIZE) -> transforms.Compose:
 def build_eval_transforms(
     image_size: int = IMAGE_SIZE, *, legacy_crop: bool = False
 ) -> transforms.Compose:
-    """Validation / inference transforms.
-
-    New models resize to ``image_size`` × ``image_size`` (same square as
-    training).
-    Legacy ResNet-18 checkpoints used Resize(256) + CenterCrop(224).
-    """
+    """Validation and grading transforms. New models just resize to a square. Old ResNet-18 checkpoints used Resize 256 then CenterCrop 224, which you get when legacy_crop is True. Pass the image size. You get a Compose."""
     if legacy_crop:
         return transforms.Compose(
             [
@@ -168,7 +138,7 @@ def build_eval_transforms(
 
 
 def is_legacy_resnet18(metadata: Optional[dict]) -> bool:
-    """True for checkpoints saved before the architecture field existed."""
+    """True when this checkpoint is an old ResNet-18 saved at 224 pixels, before we stored an architecture field. Pass the metadata dict."""
     metadata = metadata or {}
     architecture = metadata.get("architecture", "resnet18")
     image_size = int(metadata.get("image_size", LEGACY_IMAGE_SIZE))

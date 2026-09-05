@@ -1,4 +1,4 @@
-"""Load a saved checkpoint and grade one or more froth photos."""
+"""Loads a saved checkpoint and grades one or more froth photos."""
 
 from __future__ import annotations
 
@@ -25,13 +25,7 @@ ImageSource = Union[str, Path, Image.Image]
 
 
 class RegressionPredictor:
-    """Load a trained checkpoint and predict Water / Solids / Bitumen %.
-
-    If training used z-scored targets, we undo that with ``output_stats``
-    from the metadata JSON. Otherwise raw outputs are already percentages.
-    Architecture and image size come from metadata so baseline / ResNet50 /
-    VGG16 / legacy ResNet-18 checkpoints all load correctly.
-    """
+    """Loads a trained checkpoint and predicts water, solids, and bitumen percent. Pass the .pt path and the metadata dict from the sibling json. If training z-scored the labels we undo that with output_stats. Architecture and image size come from metadata so old and new checkpoints both load."""
 
     def __init__(self, model_path, metadata):
         device = select_torch_device()
@@ -42,7 +36,7 @@ class RegressionPredictor:
         )
 
         self.output_stats = metadata["output_stats"]
-        # Older checkpoints z-scored labels; new runs store raw %.
+        # Old checkpoints z-scored labels. New runs store raw percents.
         self.normalise_targets = bool(metadata.get("normalise_targets", True))
         self.output_names = list(OUTPUT_NAMES)
         self.model.eval()
@@ -106,7 +100,7 @@ class RegressionPredictor:
                 try:
                     prepared.append(self._prepare_source(source))
                 except Exception:  # noqa: BLE001
-                    # keep grading remaining images
+                    # Skip a bad file and keep grading the rest.
                     prepared.append(None)
         else:
             workers = min(self._decode_workers, len(sources))
@@ -120,7 +114,7 @@ class RegressionPredictor:
                     try:
                         prepared.append(future.result())
                     except Exception:  # noqa: BLE001
-                        # keep grading remaining images
+                        # Skip a bad file and keep grading the rest.
                         prepared.append(None)
 
         tensors: List[Optional[torch.Tensor]] = []
@@ -130,7 +124,7 @@ class RegressionPredictor:
                 continue
             try:
                 tensors.append(self.transform(image))
-            except Exception:  # noqa: BLE001 - keep grading remaining images
+            except Exception:  # noqa: BLE001  skip a bad transform and keep going
                 tensors.append(None)
         return tensors
 
@@ -147,8 +141,7 @@ class RegressionPredictor:
         on_progress: Optional[ProgressCallback] = None,
         batch_size: Optional[int] = None,
     ) -> List[Optional[dict]]:
-        """Grade many photos with batched inference. Failed items are
-        ``None``."""
+        """Grades many photos in batches. Pass a list of paths or PIL images. Failed items come back as None so one bad file does not stop the rest."""
         total = len(sources)
         results: List[Optional[dict]] = [None] * total
         if total == 0:

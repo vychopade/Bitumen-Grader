@@ -1,1 +1,1 @@
-"""Shared UI widgets: model card, progress panel, charts."""
+"""Reusable widgets: the model card, training progress panel, and charts."""

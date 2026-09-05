@@ -1,4 +1,4 @@
-"""Save/load trained models and their metadata JSON."""
+"""Saves and loads trained models plus the JSON that sits next to the weights."""
 
 from __future__ import annotations
 
@@ -29,11 +29,7 @@ def save_model(
     save_dir: Union[str, Path],
     extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Path]:
-    """Write ``{name}_{timestamp}.pt`` and a matching ``.json`` into
-    ``save_dir``.
-
-    Returns ``{"model_path": ..., "metadata_path": ...}``.
-    """
+    """Writes name_timestamp.pt and a matching json into save_dir. Pass the model, a short name, the output stats, and the training result. You get a dict with model_path and metadata_path."""
     try:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +88,7 @@ def save_model(
 
 
 def load_model_metadata(json_path: Union[str, Path]) -> Dict[str, Any]:
-    """Read the metadata ``.json`` next to a saved model."""
+    """Reads the metadata json next to a saved model. Pass the json path. You get a dict, or an error if the file is missing or not valid JSON."""
     json_path = Path(json_path)
     try:
         with open(json_path, "r", encoding="utf-8") as f:
@@ -108,8 +104,8 @@ def load_model_metadata(json_path: Union[str, Path]) -> Dict[str, Any]:
 
 
 def load_model(json_path: Union[str, Path]) -> RegressionPredictor:
-    """Load metadata + sibling ``.pt`` and return a RegressionPredictor."""
-    # Local import so app.utils doesn't hard-depend on torch-heavy app.ml.
+    """Loads the json and the sibling .pt and hands back a RegressionPredictor you can grade with. Pass the json path."""
+    # Import here so this file does not pull in torch-heavy predictor at module load.
     from app.ml.predictor import RegressionPredictor
 
     json_path = Path(json_path)
@@ -131,7 +127,7 @@ def load_model(json_path: Union[str, Path]) -> RegressionPredictor:
 
 
 def list_saved_models(save_dir: Union[str, Path]) -> List[Dict[str, Any]]:
-    """Scan ``save_dir`` for model metadata; newest first. Empty if missing."""
+    """Lists saved models in save_dir, newest first. Pass a folder. You get a list of metadata dicts, or empty if the folder is missing."""
     save_dir = Path(save_dir)
     if not save_dir.exists():
         return []
@@ -161,7 +157,7 @@ def list_saved_models(save_dir: Union[str, Path]) -> List[Dict[str, Any]]:
 def format_created_at(
     created_at: Optional[str], fmt: str = "%b %d, %Y"
 ) -> str:
-    """Format a model metadata ISO timestamp, or '' if missing/invalid."""
+    """Turns a model metadata ISO timestamp into something readable, or an empty string if it is missing or junk. Pass the created_at string."""
     if not created_at:
         return ""
     try:
@@ -181,8 +177,7 @@ def _complete_r2(scores: Any) -> Optional[Dict[str, float]]:
 
 
 def mean_r2(scores: Dict[str, float]) -> float:
-    """Mean of Water / Solids / Bitumen R² — same figure used to pick
-    checkpoints."""
+    """Averages Water, Solids, and Bitumen R squared. Same number we use to pick the best checkpoint. Pass a dict of those three scores."""
     return sum(float(scores[name]) for name in OUTPUT_NAMES) / len(
         OUTPUT_NAMES
     )
@@ -211,11 +206,7 @@ def _best_r2_from_history(
 def model_r2_splits(
     metadata: Optional[Dict[str, Any]],
 ) -> Dict[str, Dict[str, float]]:
-    """Validation and test R² dicts when they were recorded.
-
-    ``val`` comes from ``best_val_r2``, or the best-mean epoch in
-    ``training_history`` for older files that only stored per-epoch R².
-    """
+    """Pulls validation and test R squared out of metadata when they were saved. Val comes from best_val_r2, or from the best-mean epoch in training_history on older files. Pass the metadata dict. You get a dict that may have test and val keys."""
     metadata = metadata or {}
     splits: Dict[str, Dict[str, float]] = {}
     test = _complete_r2(metadata.get("test_r2"))
@@ -230,10 +221,7 @@ def model_r2_splits(
 
 
 def resolve_model_r2(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Headline accuracy: test R² if saved, otherwise validation R².
-
-    Returns ``{"split": "test"|"val", "scores": {...}}`` or ``{}``.
-    """
+    """Picks the headline accuracy: test R squared if we saved it, otherwise validation. Pass the metadata. You get a dict with split and scores, or empty if neither was recorded."""
     splits = model_r2_splits(metadata)
     if "test" in splits:
         return {"split": "test", "scores": splits["test"]}
@@ -243,7 +231,7 @@ def resolve_model_r2(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def format_r2_headline(metadata: Optional[Dict[str, Any]]) -> str:
-    """``R² 0.42`` from the headline split, or '' if none was recorded."""
+    """Builds a short R squared label like "R² 0.42" from the headline split, or an empty string if none was recorded. Pass the metadata."""
     resolved = resolve_model_r2(metadata)
     if not resolved:
         return ""

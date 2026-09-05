@@ -1,4 +1,4 @@
-"""Project directories used by more than one module."""
+"""Where the app finds its stylesheet and where it writes saved models."""
 
 from __future__ import annotations
 
@@ -10,23 +10,19 @@ APP_NAME = "BitumenGrader"
 
 
 def _is_frozen() -> bool:
-    """True when running as a PyInstaller bundle, not from source."""
+    """True when this is a packaged build, not a source checkout."""
     return bool(getattr(sys, "frozen", False))
 
 
 def bundle_dir() -> Path:
-    """Read-only files shipped with the app (stylesheet, logo)."""
+    """Folder that holds read-only files we ship with the app, like the stylesheet and logo. You do not pass anything in. You get a Path back."""
     if _is_frozen():
         return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     return Path(__file__).resolve().parent.parent
 
 
 def user_data_dir() -> Path:
-    """Writable location for saved models.
-
-    A source checkout uses the project folder so existing checkpoints stay
-    visible. A packaged app uses the OS application-data directory.
-    """
+    """Folder we are allowed to write checkpoints into. From source that is the project root so existing models stay visible. A packaged build uses the OS app-data directory instead."""
     if not _is_frozen():
         return Path(__file__).resolve().parent.parent
     if sys.platform == "darwin":

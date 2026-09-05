@@ -1,4 +1,4 @@
-"""Sidebar pages: Train, Grade, Models."""
+"""The Train, Grade, and Models pages that sit in the sidebar."""
 
 from app.pages.grade_page import GradePage
 from app.pages.models_page import ModelsPage

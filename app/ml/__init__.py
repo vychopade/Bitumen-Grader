@@ -1,1 +1,1 @@
-"""CNN model, trainer, and predictor for bitumen grading."""
+"""The CNN, trainer, and predictor used to grade bitumen photos."""

@@ -1,4 +1,4 @@
-"""Match labelled rows to images and split train/val/test sets."""
+"""Pairs each labels-file row with a photo on disk, then splits the matched pairs into train, val, and test."""
 
 import math
 import random
@@ -21,20 +21,16 @@ from app.utils.image_utils import (
 )
 from app.utils.media import collect_images
 
-# Optional CSV columns used as an experiment/campaign id (Case 2 split).
+# Labels files sometimes name the flotation run in a Campaign, Experiment, or Run column.
 CAMPAIGN_COLUMN_CANDIDATES = ("Campaign", "Experiment", "Run")
-# IMG_0032_N12.jpg → N12; IMG_0027_11.jpg → N11
+# IMG_0032_N12.jpg becomes N12. IMG_0027_11.jpg becomes N11.
 _CAMPAIGN_N_RE = re.compile(r"_N(\d+)", re.IGNORECASE)
 _CAMPAIGN_TRAILING_RE = re.compile(r"_(\d+)$")
 _PARENTHETICAL_RE = re.compile(r"\s*\(.*\)\s*$")
 
 
 def parse_campaign_id(filename: str, row=None) -> str:
-    """Campaign / flotation-run id for experiment-holdout splits.
-
-    Prefers an explicit Campaign/Experiment/Run column, then ``_N12`` in the
-    filename, then a trailing ``_11``. Returns ``unknown`` if none match.
-    """
+    """Figures out which flotation campaign a photo belongs to so we can hold out whole runs. Pass the filename and optionally the labels row. You get a campaign id, or unknown if nothing matched."""
     if row is not None:
         for column in CAMPAIGN_COLUMN_CANDIDATES:
             has_column = (
@@ -66,16 +62,7 @@ def parse_campaign_id(filename: str, row=None) -> str:
 
 
 class RegressionDataset(Dataset):
-    """Images + (Water, Solids, Bitumen) targets from a labels file.
-
-    Matches CSV/Excel rows to files in ``image_dir``, shuffles with a fixed
-    seed, and splits into train/val/test. Norm stats always come from train
-    only, even when this instance is the val or test split.
-
-    ``split_mode``:
-        ``random`` — Case 1: shuffled image-level split (interpolation).
-        ``experiment`` — Case 2: hold out entire flotation campaigns.
-    """
+    """Reads the labels file, matches rows to photos in image_dir, and keeps one split of the data. Pass the labels path, image folder, and which split you want. Means and stds always come from the train split even if this instance is val or test. split_mode random shuffles photos; experiment holds out whole flotation campaigns."""
 
     EXPECTED_COLUMNS = ["Image", "Pan", "Water", "Solids", "Bitumen"]
     EXTENSION_CANDIDATES = IMAGE_EXTENSIONS
@@ -141,8 +128,7 @@ class RegressionDataset(Dataset):
 
         self.matched = []
         self.unmatched = []
-        # Image found, but Water/Solids/Bitumen/Pan wasn't a number.
-        # Each entry: {"image": str, "reason": str}.
+        # Photo was on disk, but Water, Solids, Bitumen, or Pan was not a number.
         self.invalid_rows = []
 
         for _, row in df.iterrows():
@@ -176,7 +162,7 @@ class RegressionDataset(Dataset):
                 bitumen = self._parse_float(row["Bitumen"], "Bitumen")
                 pan = self._parse_pan(row["Pan"])
             except ValueError as exc:
-                # Bad cell (typo, blank, etc.) — skip this row, keep going.
+                # Skip a typo or blank cell and keep matching the rest.
                 self.invalid_rows.append(
                     {"image": image_value, "reason": str(exc)}
                 )
@@ -234,8 +220,7 @@ class RegressionDataset(Dataset):
 
     @staticmethod
     def _index_images(image_dir: Path):
-        """Map CSV names (basename, relative path, or stem) to a path under
-        ``image_dir``."""
+        """Indexes every photo under image_dir by basename, relative path, and stem so a CSV name can find it. Pass the folder. You get two dicts, by_name and by_stem."""
         by_name = {}
         by_stem = {}
         for path_str in collect_images(image_dir):
@@ -272,8 +257,7 @@ class RegressionDataset(Dataset):
         return train_portion, val_portion, test_portion
 
     def _split_by_campaign(self, matched, val_fraction, test_fraction, seed):
-        """Hold out entire campaigns (paper Case 2). Falls back if < 2
-        campaigns."""
+        """Puts whole flotation campaigns into train, val, or test instead of mixing photos from the same run. Pass the matched items and the split fractions. You get three lists, or None if we only found one campaign."""
         groups = defaultdict(list)
         for item in matched:
             groups[item["campaign"]].append(item)
@@ -326,14 +310,14 @@ class RegressionDataset(Dataset):
 
     @staticmethod
     def _split_portions(shuffled, val_fraction, test_fraction):
-        """Split a shuffled list into train / val / test."""
+        """Cuts a shuffled list into train, val, and test using the given fractions. Pass the list and the two fractions. You get three lists, and train is never left empty if we can help it."""
         total = len(shuffled)
         if total == 0:
             return [], [], []
 
         test_count = int(total * test_fraction)
         val_count = int(total * val_fraction)
-        # At least one train sample if we have enough data.
+        # Keep at least one train sample when there are enough photos.
         if total >= 3:
             test_count = max(1, test_count) if test_fraction > 0 else 0
             val_count = max(1, val_count) if val_fraction > 0 else 0
@@ -345,7 +329,7 @@ class RegressionDataset(Dataset):
                 else:
                     break
         elif total == 2:
-            # One train + one val; skip test so train isn't empty.
+            # With two photos, one goes to train and one to val so train is not empty.
             test_count = 0
             val_count = 1
         else:
@@ -362,8 +346,7 @@ class RegressionDataset(Dataset):
 
     @staticmethod
     def _parse_float(raw_value, column_name):
-        """Parse a numeric cell; raise ValueError with a clear message if
-        not."""
+        """Turns a table cell into a float. Pass the raw value and the column name. You get a float, or a ValueError that names the column if it was blank or junk."""
         try:
             value = float(raw_value)
         except (TypeError, ValueError):
@@ -376,7 +359,7 @@ class RegressionDataset(Dataset):
 
     @staticmethod
     def _parse_pan(raw_value):
-        """Parse Pan as int; also accepts float-like strings like "3.0"."""
+        """Turns the Pan cell into a whole number. Pass the raw value. Strings like 3.0 are fine, blanks are not."""
         try:
             return int(raw_value)
         except (TypeError, ValueError):
@@ -417,7 +400,7 @@ class RegressionDataset(Dataset):
         ):
             image = standardize_to_model_size(image, self.image_size)
         image_tensor = self.transforms(image)
-        # Last-resort guard if a custom transform pipeline is swapped in later.
+        # If someone later swaps in a transform that does not square the photo, force the size here.
         if image_tensor.shape[-2:] != (self.image_size, self.image_size):
             image_tensor = torch.nn.functional.interpolate(
                 image_tensor.unsqueeze(0),
@@ -436,8 +419,7 @@ class RegressionDataset(Dataset):
 
     @staticmethod
     def _equal_frequency_edges(values, n_bins=CLS_BINS):
-        """Interior edges for equal-frequency bins, computed on train labels
-        only."""
+        """Cuts the train labels into equal-count bins and returns the interior edges. Pass the values and how many bins. You get a list of edges, or empty if there is not enough data."""
         if n_bins < 2 or len(values) < n_bins:
             return []
         ordered = sorted(values)

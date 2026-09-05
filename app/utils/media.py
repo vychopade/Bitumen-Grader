@@ -1,4 +1,4 @@
-"""Find photos on disk. No Qt — used by the dataset and the file dialogs."""
+"""Walks a folder for photos. No Qt, so the dataset can use this without pulling in the UI."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def is_label_path(path: str) -> bool:
 
 
 def collect_images(root: Union[str, Path]) -> List[str]:
-    """Image paths under ``root``, nested folders included, sorted."""
+    """Lists every image under the given folder, including nested ones, sorted. Pass a directory path. You get a list of file paths, or an empty list if it is not a folder."""
     directory = Path(root)
     if not directory.is_dir():
         return []

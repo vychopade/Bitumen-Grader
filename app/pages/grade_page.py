@@ -1,9 +1,4 @@
-"""
-Grade Images page.
-
-Run the active model on sample photos and show Water / Solids / Bitumen
-predictions, a sum-to-~100% check, and a rough closest-batch (Pan) guess.
-"""
+"""Grade page. You drop photos onto the queue, run the loaded model, and see water, solids, and bitumen plus a check that they add up to about 100. There is also a rough guess of which pan batch the bitumen looks like."""
 
 from __future__ import annotations
 
@@ -79,12 +74,7 @@ LEFT_PANEL_WIDTH = 340
 
 
 class GradePage(QWidget):
-    """Grade sample images with the active model.
-
-    Drop photos or folders onto the queue, or choose files/folder. Grade one
-    selected image or the whole queue; results show as a single-image view or
-    a table you can export to CSV.
-    """
+    """The Grade tab. Drop photos or a folder onto the queue, grade one image or the whole list, then look at a single result or export a table."""
 
     def __init__(
         self,
@@ -97,8 +87,7 @@ class GradePage(QWidget):
         self._queue: List[_QueueImage] = []
         self._id_counter = itertools.count(1)
         self._selected_id: Optional[int] = None
-        #: "single" = not-graded / one result;
-        #: "batch" = Grade All summary table.
+        # single shows one photo. batch is the Grade All table.
         self._view_mode = "single"
         self._batch_row_queue_ids: List[int] = []
 
@@ -150,7 +139,7 @@ class GradePage(QWidget):
         self._refresh_right_column()
         self._update_action_buttons_enabled()
 
-    # -- UI construction ---------------------------------------------------
+    # Build the widgets and lay them out.
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -284,10 +273,7 @@ class GradePage(QWidget):
         banner = _ClickableBanner()
         banner.setObjectName("noModelBanner")
         banner.setStyleSheet(
-            # Scoped to #noModelBanner rather than the bare "QFrame" type
-            # selector -- QLabel is itself a QFrame subclass in Qt, so an
-            # unscoped rule here would also draw this border around the
-            # word-wrapped message label nested inside, not just the banner.
+            # Target the banner by id. QLabel is a QFrame in Qt, so a bare QFrame rule would also box the message inside.
             f"QFrame#noModelBanner {{ background-color: {SURFACE_COLOR};"
             f" border: 1px solid {BORDER_COLOR};"
             f"border-radius: 3px; }}"
@@ -567,7 +553,7 @@ class GradePage(QWidget):
         )
         return table
 
-    # -- Model selector / navigation ----------------------------------------
+    # Keep the model name in the header in sync with the sidebar.
 
     def _on_active_model_changed(
         self, _active_model: Optional[Dict[str, Any]]
@@ -604,9 +590,9 @@ class GradePage(QWidget):
         if self.main_window is not None:
             self.main_window.navigate_to("models")
 
-    # -- Queue management -----------------------------------------------------
+    # Add, remove, and select photos in the queue.
 
-    def showEvent(self, event) -> None:  # noqa: D401 - Qt override
+    def showEvent(self, event) -> None:  # noqa: D401  Qt calls this when the page is shown
         super().showEvent(event)
         self._refresh_top_bar()
         self._refresh_right_column()
@@ -687,7 +673,7 @@ class GradePage(QWidget):
         self._update_action_buttons_enabled()
         self._refresh_right_column()
 
-    # -- Grading --------------------------------------------------------------
+    # Run grading on a background thread so the window stays clickable.
 
     def _on_grade_this_image(self) -> None:
         if self._thread is not None:
@@ -771,7 +757,7 @@ class GradePage(QWidget):
         self._loading_overlay.set_message(f"Grading {done} of {total}\u2026")
 
     def _set_grading_active(self, active: bool) -> None:
-        """Disable controls while grading is running."""
+        """Greys out Grade and Clear while a job is running so you cannot start a second one."""
         for button in (
             self._grade_all_button,
             self._clear_all_button,
@@ -828,12 +814,7 @@ class GradePage(QWidget):
         self._worker = None
 
     def _handle_model_load_failure(self, exc: Exception) -> None:
-        """Clear the active model and show a dialog if grading blows up
-        mid-run.
-
-        ``set_active_model`` already checks loads up front; this is a fallback
-        if a loaded model becomes unusable later (e.g. file deleted).
-        """
+        """Clears the loaded model and pops a dialog if grading dies mid-run. Loads are checked up front, so this is the fallback if the .pt file vanished after it was loaded."""
         if self.main_window is not None:
             self.main_window.set_active_model(None)
 
@@ -851,7 +832,7 @@ class GradePage(QWidget):
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
         box.exec()
 
-    # -- Right column: single-image view -------------------------------------
+    # Right column when you have one photo selected.
 
     def _refresh_right_column(self) -> None:
         active_model = (
@@ -971,7 +952,7 @@ class GradePage(QWidget):
         )
         self._pan_grade_card.set_grade(grade)
 
-    # -- Right column: batch results view -------------------------------------
+    # Right column after Grade All: the summary table.
 
     def _graded_queue_images(self) -> List[_QueueImage]:
         return [q for q in self._queue if q.result is not None]
@@ -1072,7 +1053,7 @@ class GradePage(QWidget):
         if 0 <= row < len(self._batch_row_queue_ids):
             self._select_queue_item(self._batch_row_queue_ids[row])
 
-    # -- Export / clear -------------------------------------------------------
+    # Write the table to CSV or wipe the results.
 
     def _on_export_results(self) -> None:
         if self._export_thread is not None:

@@ -1,11 +1,4 @@
-"""Froth-image regressors aligned with Prince & Prasad transfer-learning
-findings.
-
-Default is a compact CNN trained from scratch. ImageNet VGG16 / ResNet50
-variants are optional second-stage candidates (mainly for Solids). Over-
-parameterised 3-layer batch-normalised heads are not offered: they collapse
-into negative transfer on this domain.
-"""
+"""CNNs that turn a froth photo into water, solids, and bitumen. The default is a small network trained from scratch. ResNet50 and VGG16 are optional if you want to try ImageNet transfer, mostly for solids. We do not offer a deep batch-norm head because those fell apart on this data."""
 
 from __future__ import annotations
 
@@ -17,11 +10,11 @@ from torchvision import models
 
 from app.ml.recipe import IMAGE_SIZE
 
-NUM_OUTPUTS = 3  # Water, Solids, Bitumen
+NUM_OUTPUTS = 3  # three grades: water, solids, bitumen
 
 
 def select_torch_device() -> torch.device:
-    """Prefer CUDA, then Apple Metal, else CPU."""
+    """Picks a torch device. Tries CUDA, then Apple Metal, then CPU. You get a torch.device back."""
     if torch.cuda.is_available():
         return torch.device("cuda")
     backends_mps = getattr(torch.backends, "mps", None)
@@ -62,22 +55,17 @@ def _conv_block(in_channels: int, out_channels: int) -> nn.Sequential:
 
 
 class CompactFrothCNN(nn.Module):
-    """Compact texture CNN: five conv stages + global average pool → 256-d
-    features.
-
-    Designed for froth surfaces (repetitive texture, weak object structure)
-    rather than ImageNet object semantics.
-    """
+    """Small CNN for froth texture: five conv stages then global average pool down to 256 numbers. Built for repetitive bubble texture, not ImageNet-style objects."""
 
     feature_dim = 256
 
     def __init__(self) -> None:
         super().__init__()
         self.features = nn.Sequential(
-            _conv_block(3, 32),  # 256 → 128
-            _conv_block(32, 64),  # 128 → 64
-            _conv_block(64, 128),  # 64 → 32
-            _conv_block(128, 256),  # 32 → 16
+            _conv_block(3, 32),  # 256 px down to 128
+            _conv_block(32, 64),  # 128 down to 64
+            _conv_block(64, 128),  # 64 down to 32
+            _conv_block(128, 256),  # 32 down to 16
             nn.Conv2d(256, 256, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
@@ -89,7 +77,7 @@ class CompactFrothCNN(nn.Module):
 
 
 def infer_architecture(state_dict: dict) -> str:
-    """Guess architecture from checkpoint keys when metadata is missing."""
+    """Guesses which architecture a checkpoint used when the json forgot to say. Pass the state dict. You get a string like baseline or resnet50."""
     keys = list(state_dict.keys())
     if any(
         key == "backbone.fc.weight" or key == "backbone.fc.bias"
@@ -106,7 +94,7 @@ def infer_architecture(state_dict: dict) -> str:
 
 
 def infer_head(state_dict: dict) -> str:
-    """Native is a single Linear (`head.weight`); C2 uses `head.0.weight`."""
+    """Guesses the head type from checkpoint keys. Native is a single Linear named head.weight. C2 stores the first layer as head.0.weight. Pass the state dict."""
     if "head.0.weight" in state_dict:
         return "c2"
     return "native"
@@ -115,11 +103,7 @@ def infer_head(state_dict: dict) -> str:
 def _make_head(
     in_features: int, head_type: str, num_outputs: int = NUM_OUTPUTS
 ) -> nn.Module:
-    """Native linear head, or a lightweight 2-layer FC head (C2).
-
-    C2 is the only custom head evaluated as competitive in the paper.
-    3-layer batch-normalised heads (C3BN) are intentionally omitted.
-    """
+    """Builds the regression head. Native is one linear layer. C2 is a small two-layer head, the only extra head that actually helped in the paper. Pass feature size and head type. You get an nn.Module."""
     if head_type not in HEAD_TYPES:
         raise ValueError(
             f"head must be one of {HEAD_TYPES}, got {head_type!r}"
@@ -136,20 +120,7 @@ def _make_head(
 
 
 class BitumenRegressor(nn.Module):
-    """Predicts [Water, Solids, Bitumen] from a froth RGB image.
-
-    Parameters
-    ----------
-    architecture:
-        ``baseline`` (default), ``resnet50``, ``vgg16``,
-        or ``resnet18`` (legacy).
-    pretrained:
-        ImageNet initialisation. Ignored for ``baseline`` (always from
-        scratch).
-        Default False: ImageNet transfer is not the operational default.
-    head:
-        ``native`` (single linear) or ``c2`` (2-layer FC).
-    """
+    """Predicts water, solids, and bitumen from one RGB froth photo. Pass architecture (baseline, resnet50, vgg16, or old resnet18), whether to start from ImageNet weights, and native or c2 for the head. pretrained is ignored on baseline because that one always trains from scratch."""
 
     def __init__(
         self,
@@ -171,7 +142,7 @@ class BitumenRegressor(nn.Module):
         self.head_type = head
         self.pretrained = bool(pretrained) and architecture != "baseline"
         self.num_outputs = num_outputs
-        # Legacy ResNet-18 checkpoints store the linear layer as backbone.fc.
+        # Old ResNet-18 files stored the last linear layer as backbone.fc, not a separate head.
         self._legacy_combined = architecture == "resnet18"
 
         if architecture == "baseline":
@@ -197,7 +168,7 @@ class BitumenRegressor(nn.Module):
             backbone.fc = nn.Identity()
             self.backbone = backbone
             self.head = _make_head(in_features, head, num_outputs)
-        else:  # vgg16
+        else:  # remaining architecture is vgg16
             weights = models.VGG16_Weights.DEFAULT if self.pretrained else None
             vgg = models.vgg16(weights=weights)
             self.backbone = nn.Sequential(
@@ -208,20 +179,20 @@ class BitumenRegressor(nn.Module):
             self.head = _make_head(512, head, num_outputs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Always [Water, Solids, Bitumen]; raw linear outputs, no activation.
+        # Order is always water, solids, bitumen. Raw linear numbers, no softmax.
         features = self.backbone(x)
         if self._legacy_combined:
             return features
         return self.head(features)
 
     def head_parameters(self) -> Iterable[nn.Parameter]:
-        """Just the regression head."""
+        """Parameters for just the regression head, used when we freeze the backbone."""
         if self._legacy_combined:
             return self.backbone.fc.parameters()
         return self.head.parameters()
 
     def backbone_parameters(self) -> Iterable[nn.Parameter]:
-        """Everything except the regression head."""
+        """Parameters for everything except the regression head."""
         if self._legacy_combined:
             head_ids = {
                 id(parameter) for parameter in self.backbone.fc.parameters()
@@ -242,7 +213,7 @@ class BitumenRegressor(nn.Module):
             parameter.requires_grad = True
 
     def _output_linear(self) -> Optional[nn.Linear]:
-        """Last linear layer that emits [Water, Solids, Bitumen]."""
+        """Finds the last linear layer that actually emits the three grades."""
         if self._legacy_combined:
             layer = getattr(self.backbone, "fc", None)
             return layer if isinstance(layer, nn.Linear) else None
@@ -256,13 +227,7 @@ class BitumenRegressor(nn.Module):
         return None
 
     def init_output_bias(self, output_stats: dict) -> None:
-        """Start raw-% training at the train-set means instead of at 0.
-
-        A fresh linear head outputs ~0. With Water around 70%, that is already
-        an MAE of 70% and R² in the −10s before any learning happens. Zeroing
-        the last-layer weights and setting the bias to the label means makes
-        epoch 1 equivalent to “predict the average.”
-        """
+        """Biases the last layer to the training-set means so epoch 1 predicts the average instead of zero. A fresh head outputs about 0, and water around 70 percent would already give a terrible MAE before any learning. Pass the output_stats dict from the dataset."""
         layer = self._output_linear()
         if layer is None or layer.bias is None:
             return
@@ -289,12 +254,7 @@ class BitumenRegressor(nn.Module):
 
     @classmethod
     def from_checkpoint(cls, path, metadata=None, device=None):
-        """Load weights, reconstructing architecture from metadata when
-        present.
-
-        Checkpoints saved before this overhaul have no architecture field and
-        are treated as ResNet-18 with a native head.
-        """
+        """Loads weights from a .pt file. Pass the path, optional metadata, and optional device. If the json has no architecture field we treat it as old ResNet-18. You get a model already on the device and in eval mode."""
         if device is None:
             device = select_torch_device()
         metadata = metadata or {}

@@ -1,1 +1,1 @@
-"""Shared helpers (model I/O, images, file picking)."""
+"""Helpers for saving models, loading photos, and picking files."""
