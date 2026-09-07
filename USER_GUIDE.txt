@@ -1,0 +1,101 @@
+BitumenGrader — user guide
+
+What you need
+-------------
+Python 3.10 or a newer version.
+macOS, Windows, or Linux.
+
+
+Install
+-------
+Open a terminal and go to the Bitumen-Grader folder:
+
+    cd path/to/Bitumen-Grader
+
+Replace that path with the real location of the folder.
+Then run:
+
+    pip install -r requirements.txt
+
+If the terminal says pip is not found, try pip3 instead.
+
+
+Run the app
+-----------
+    python main.py
+
+A window should open. If it does not, the install step did
+not finish. Run the pip command again, then try python main.py
+once more.
+
+
+Train a model
+-------------
+1. On the Train page, drop a labels file (CSV or Excel).
+2. Drop the folder that holds the matching photos.
+3. Give the model a name.
+4. Click Start training.
+
+The Baseline CNN is the recommended architecture.
+Training runs three networks in turn: Water, then Solids,
+then Bitumen. That takes a while on CPU.
+
+When it finishes, the model is saved in the models folder
+and loaded automatically so you can grade right away.
+
+
+Labels file
+-----------
+CSV or Excel. The first row is the header. Spell the names
+exactly like this:
+
+    Image,Pan,Water,Solids,Bitumen
+
+Each row after that is one sample.
+
+Image is the photo file name. It must match a file in the
+photo folder. sample_001.jpg is fine. sample_001 with no
+ending is also fine.
+
+Pan is the batch number. It is shown in the app but is not
+predicted.
+
+Water, Solids, and Bitumen are percentages (0 to 100).
+They should add up to about 100 for each row.
+
+A correct header looks like this:
+
+    Image,Pan,Water,Solids,Bitumen
+
+A correct row looks like this:
+
+    IMG_0032.jpg,4,68.2,12.1,19.7
+
+A row is skipped if there is no matching photo, or if a
+number cell is empty or not a number.
+
+
+Grade photos
+------------
+1. Open Models in the sidebar and click Load on a trained
+   model (or train one first).
+2. On the Grade page, drop photos or a folder onto the queue.
+3. Click Grade this photo, or Grade all.
+
+Each photo gets three percentages: water, solids, and
+bitumen. They always add up to 100. Two of them come from
+the networks; the third is 100 minus those two.
+
+You can export a CSV of batch results from the Grade all
+table.
+
+
+Saved models
+------------
+Every training run writes a pair of files into the models
+folder, next to main.py:
+
+    YourName_YYYYMMDD_HHMM.pt
+    YourName_YYYYMMDD_HHMM.json
+
+Load, retrain, or delete them from the Models page.

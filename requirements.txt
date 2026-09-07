@@ -1,0 +1,7 @@
+torch          # Deep learning framework for the CNN model
+torchvision    # Image transforms and pretrained CNN backbones
+PyQt6          # Desktop UI for train, grade, and models pages
+Pillow         # Image loading and preprocessing
+pandas         # Read label tables from CSV and Excel
+openpyxl       # Excel (.xlsx) support for pandas
+matplotlib     # Training curves and model-card charts

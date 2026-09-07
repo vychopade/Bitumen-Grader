@@ -1,0 +1,1 @@
+"""BitumenGrader desktop app package."""
