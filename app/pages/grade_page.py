@@ -454,6 +454,13 @@ class GradePage(QWidget):
             f"{LABEL_RESET_QSS}"
         )
 
+        card.setToolTip(
+            "If every photo here is of the same sample, these averages are the "
+            "number to trust. One photo catches one moment of a moving froth; "
+            "averaging several photos of the same pan cancels that noise and "
+            "measurably beats any single reading."
+        )
+
         layout = QHBoxLayout(card)
         layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(24)

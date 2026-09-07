@@ -439,6 +439,22 @@ class RegressionDataset(Dataset):
                 edges[index] = edges[index - 1] + 1e-6
         return edges
 
+    def sample_groups(self):
+        """One key per photo in split order, naming the lab measurement it came from.
+
+        Several photos of the same pan share a single lab result, so these keys let
+        the trainer score one measurement once instead of counting it 4-20 times.
+        """
+        return [
+            (
+                item["campaign"],
+                round(item["water"], 2),
+                round(item["solids"], 2),
+                round(item["bitumen"], 2),
+            )
+            for item in self.data
+        ]
+
     def get_output_stats(self):
         return self.output_stats
 

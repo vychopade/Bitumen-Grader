@@ -1,4 +1,9 @@
-"""CNNs that turn a froth photo into water, solids, and bitumen. The default is a small network trained from scratch. ResNet50 and VGG16 are optional if you want to try ImageNet transfer, mostly for solids. We do not offer a deep batch-norm head because those fell apart on this data."""
+"""CNNs that turn a froth photo into water, solids, and bitumen.
+
+The default is a frozen ImageNet ResNet18 with a small linear head. There is
+also a from-scratch CNN, plus ResNet50 and VGG16 if you want to try those.
+A deep batch-norm head is not offered because it collapsed on this data.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,7 @@ import torch.nn as nn
 from torchvision import models
 
 from app.constants import OUTPUT_NAMES
-from app.ml.recipe import IMAGE_SIZE
+from app.ml.recipe import image_size_for_architecture
 
 NUM_OUTPUTS = 3  # three grades: water, solids, bitumen
 
@@ -32,16 +37,33 @@ def select_torch_device() -> torch.device:
     return torch.device("cpu")
 
 
-ARCHITECTURES = ("baseline", "resnet50", "vgg16", "resnet18")
-TRAINABLE_ARCHITECTURES = ("baseline", "resnet50", "vgg16")
-HEAD_TYPES = ("native", "c2")
+ARCHITECTURES = ("resnet18_tap", "baseline", "resnet50", "vgg16", "resnet18")
+TRAINABLE_ARCHITECTURES = ("resnet18_tap", "baseline", "resnet50", "vgg16")
+HEAD_TYPES = ("native", "c2", "norm")
+
+# Defaults that worked best for bitumen on this dataset.
+DEFAULT_ARCHITECTURE = "resnet18_tap"
+DEFAULT_HEAD = "norm"
 
 ARCHITECTURE_LABELS = {
-    "baseline": "Baseline CNN (recommended)",
+    "resnet18_tap": "ResNet18 transfer",
+    "baseline": "Baseline CNN (from scratch)",
     "resnet50": "ResNet50 (ImageNet transfer)",
     "vgg16": "VGG16 (ImageNet transfer)",
     "resnet18": "ResNet18 (legacy)",
 }
+
+# Dihedral group of the square: four rotations, each with and without a flip.
+# Froth has no "up", so all eight views of a photo are equally valid.
+TTA_VIEWS = 8
+
+
+def dihedral_view(x: torch.Tensor, view: int) -> torch.Tensor:
+    """One of the eight square symmetries of a [.., H, W] tensor."""
+    if view & 4:
+        x = torch.flip(x, [-1])
+    turns = view & 3
+    return torch.rot90(x, turns, dims=[-2, -1]) if turns else x
 
 
 def _norm_layer(num_channels: int, use_groupnorm: bool) -> nn.Module:
@@ -67,7 +89,7 @@ def _conv_block(
 
 
 class CompactFrothCNN(nn.Module):
-    """Small CNN for froth texture: five conv stages then global average pool down to 256 numbers. Built for repetitive bubble texture, not ImageNet-style objects."""
+    """Small CNN trained from scratch: five conv stages, then global average pool to 256 numbers."""
 
     feature_dim = 256
 
@@ -89,9 +111,51 @@ class CompactFrothCNN(nn.Module):
         return torch.flatten(self.features(x), 1)
 
 
+class FrothTransferTrunk(nn.Module):
+    """ImageNet ResNet18 used as a feature extractor for froth photos.
+
+    Only the last stage (layer4) is pooled, giving 512 features. BatchNorm
+    stays on its ImageNet running stats instead of updating them from our
+    small batches. The trunk is frozen by default so we only train the head.
+    """
+
+    TAPS = (4,)
+    WIDTHS = {1: 64, 2: 128, 3: 256, 4: 512}
+
+    def __init__(self, pretrained: bool = True, bn_eval: bool = True) -> None:
+        super().__init__()
+        weights = models.ResNet18_Weights.DEFAULT if pretrained else None
+        net = models.resnet18(weights=weights)
+        self.stem = nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool)
+        self.stages = nn.ModuleList(
+            [net.layer1, net.layer2, net.layer3, net.layer4]
+        )
+        self.bn_eval = bool(bn_eval)
+        self.feature_dim = sum(self.WIDTHS[i] for i in self.TAPS)
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.bn_eval:
+            for module in self.modules():
+                if isinstance(module, nn.BatchNorm2d):
+                    module.eval()
+        return self
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        hidden = self.stem(x)
+        taps = []
+        for index, stage in enumerate(self.stages, 1):
+            hidden = stage(hidden)
+            if index in self.TAPS:
+                taps.append(hidden.mean(dim=(2, 3)))
+        return torch.cat(taps, dim=1)
+
+
 def infer_architecture(state_dict: dict) -> str:
     """Guess the architecture when the json forgot to say. Returns something like baseline or resnet50."""
     keys = list(state_dict.keys())
+    if any(key.startswith("backbone.stages.") for key in keys):
+        return "resnet18_tap"
     if any(
         key == "backbone.fc.weight" or key == "backbone.fc.bias"
         for key in keys
@@ -120,20 +184,74 @@ def infer_num_outputs(state_dict: dict) -> int:
 
 
 def infer_head(state_dict: dict) -> str:
-    """Guess the head from checkpoint keys. Native is a single Linear named head.weight. C2 stores the first layer as head.0.weight."""
+    """Guess the head from checkpoint keys: native is one Linear, c2 starts with a Linear at head.0, and norm starts with the feature standardiser."""
+    if "head.0.mean" in state_dict and "head.0.std" in state_dict:
+        return "norm"
     if "head.0.weight" in state_dict:
         return "c2"
     return "native"
 
 
+class FeatureStandardizer(nn.Module):
+    """Z-score each pooled backbone channel using stats from the training set.
+
+    ResNet channels come out at very different scales, so a linear layer on the
+    raw vector mostly listens to a few loud channels. These mean/std values are
+    fitted once on the training photos and stored as buffers in the .pt file.
+    Grading reloads them; it should not recompute them from the photos being
+    graded, because those are usually a handful of shots of one pan.
+    """
+
+    def __init__(self, num_features: int) -> None:
+        super().__init__()
+        self.register_buffer("mean", torch.zeros(num_features))
+        self.register_buffer("std", torch.ones(num_features))
+        # Lets training assert it fitted, and grading assert it loaded.
+        self.register_buffer("fitted", torch.zeros((), dtype=torch.bool))
+
+    @torch.no_grad()
+    def fit(self, features: torch.Tensor) -> None:
+        """Set the statistics from a [N, D] block of training-split features."""
+        self.mean.copy_(features.mean(dim=0).to(self.mean.dtype))
+        self.std.copy_(
+            features.std(dim=0).clamp_min(1e-6).to(self.std.dtype)
+        )
+        self.fitted.fill_(True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return (x - self.mean) / self.std
+
+
+def find_feature_standardizer(module: nn.Module):
+    """The FeatureStandardizer inside a model, or None if the head has none."""
+    for child in module.modules():
+        if isinstance(child, FeatureStandardizer):
+            return child
+    return None
+
+
 def _make_head(
     in_features: int, head_type: str, num_outputs: int = NUM_OUTPUTS
 ) -> nn.Module:
-    """Build the regression head. Native is one linear layer. C2 is the two-layer head that actually helped in the paper."""
+    """Build the regression head. Native is one linear layer. C2 is a two-layer ReLU head. Norm standardises the features first."""
     if head_type not in HEAD_TYPES:
         raise ValueError(
             f"head must be one of {HEAD_TYPES}, got {head_type!r}"
         )
+    if head_type == "norm":
+        # Standardise the channels, then LayerNorm, then one linear layer.
+        # A hidden layer on top of this overfit on our data.
+        head = nn.Sequential(
+            FeatureStandardizer(in_features),
+            nn.LayerNorm(in_features),
+            nn.Dropout(0.2),
+            nn.Linear(in_features, num_outputs),
+        )
+        with torch.no_grad():
+            # Start at zero so a z-scored target begins at the training mean.
+            head[3].weight.zero_()
+            head[3].bias.zero_()
+        return head
     if head_type == "c2":
         hidden = 256 if in_features >= 256 else 128
         return nn.Sequential(
@@ -170,12 +288,18 @@ class BitumenRegressor(nn.Module):
         self.pretrained = bool(pretrained) and architecture != "baseline"
         self.num_outputs = num_outputs
         self.use_groupnorm = bool(use_groupnorm) and architecture == "baseline"
-        # Dropout on pooled features cuts overfitting without changing weight keys.
-        self.feature_dropout = nn.Dropout(0.2)
+        # Extra dropout on pooled features. The norm head already has its own,
+        # so this is turned off there to avoid dropping twice.
+        self.feature_dropout = nn.Dropout(0.0 if head == "norm" else 0.2)
         # Old ResNet-18 files stored the last linear layer as backbone.fc, not a separate head.
         self._legacy_combined = architecture == "resnet18"
 
-        if architecture == "baseline":
+        if architecture == "resnet18_tap":
+            self.backbone = FrothTransferTrunk(pretrained=self.pretrained)
+            self.head = _make_head(
+                self.backbone.feature_dim, head, num_outputs
+            )
+        elif architecture == "baseline":
             self.backbone = CompactFrothCNN(use_groupnorm=self.use_groupnorm)
             self.head = _make_head(
                 CompactFrothCNN.feature_dim, head, num_outputs
@@ -257,7 +381,7 @@ class BitumenRegressor(nn.Module):
         return None
 
     def init_output_bias(self, output_stats: dict) -> None:
-        """Bias the last layer to the training-set means so epoch 1 predicts the average instead of zero. A fresh head outputs about 0, and water around 70 percent would already give a terrible MAE before any learning."""
+        """Bias the last layer to the training-set means so epoch 1 predicts the average instead of zero."""
         layer = self._output_linear()
         if layer is None or layer.bias is None:
             return
@@ -277,12 +401,15 @@ class BitumenRegressor(nn.Module):
             "architecture": self.architecture,
             "head": self.head_type,
             "pretrained": self.pretrained,
-            "image_size": IMAGE_SIZE
+            "image_size": image_size_for_architecture(self.architecture)
             if self.architecture != "resnet18"
             else 224,
             "preserve_aspect_ratio": True,
             "num_outputs": self.num_outputs,
             "use_groupnorm": self.use_groupnorm,
+            # Average the eight square symmetries at grade time for the
+            # transfer model. Older checkpoints omit this and stay single-view.
+            "tta_views": TTA_VIEWS if self.architecture == "resnet18_tap" else 1,
         }
 
     @classmethod

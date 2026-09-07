@@ -448,6 +448,9 @@ class ProgressPanel(QWidget):
         test_mae: Optional[Dict[str, float]] = None,
         best_val_r2: Optional[Dict[str, float]] = None,
         test_r2: Optional[Dict[str, float]] = None,
+        test_measurement_r2: Optional[Dict[str, float]] = None,
+        test_measurement_mae: Optional[Dict[str, float]] = None,
+        test_measurement_count: Optional[int] = None,
     ) -> None:
         """Show the green training-complete banner after a successful save."""
         self._early_stop_banner.setVisible(False)
@@ -457,6 +460,11 @@ class ProgressPanel(QWidget):
         )
         if test_mae or test_r2:
             text += f"\n{self._format_r2_mae_line('Test', test_r2, test_mae)}"
+        measurement_line = self._format_measurement_line(
+            test_measurement_r2, test_measurement_mae, test_measurement_count
+        )
+        if measurement_line:
+            text += f"\n{measurement_line}"
         self._completion_label.setText(text)
         self._completion_banner.setVisible(True)
         self.append_log(f'Training complete. Saved as "{model_name}".')
@@ -464,6 +472,8 @@ class ProgressPanel(QWidget):
             self.append_log(
                 self._format_r2_mae_line("Test", test_r2, test_mae)
             )
+        if measurement_line:
+            self.append_log(measurement_line)
 
     def show_early_stopped_banner(
         self,
@@ -487,6 +497,27 @@ class ProgressPanel(QWidget):
             self.append_log(
                 self._format_r2_mae_line("Test", test_r2, test_mae)
             )
+
+    @staticmethod
+    def _format_measurement_line(
+        r2: Optional[Dict[str, float]],
+        mae: Optional[Dict[str, float]],
+        count: Optional[int],
+    ) -> str:
+        """One line for the scores after pooling photos that share a lab result."""
+        if not r2 and not mae:
+            return ""
+        r2 = r2 or {}
+        mae = mae or {}
+        suffix = f" over {count} lab measurements" if count else ""
+        return (
+            f"Test per sample{suffix}: R\u00b2 Bitumen "
+            f"{r2.get('Bitumen', 0.0):.3f}  Solids {r2.get('Solids', 0.0):.3f}  "
+            f"Water {r2.get('Water', 0.0):.3f}  |  MAE B "
+            f"\u00b1{mae.get('Bitumen', 0.0):.2f}%  "
+            f"S \u00b1{mae.get('Solids', 0.0):.2f}%  W "
+            f"\u00b1{mae.get('Water', 0.0):.2f}%"
+        )
 
     @staticmethod
     def _format_r2_mae_line(

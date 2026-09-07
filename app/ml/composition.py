@@ -9,6 +9,10 @@ import torch
 from app.constants import OUTPUT_NAMES
 
 DEFAULT_RESIDUAL = "Solids"
+# Bitumen is the grade this app is meant to report, so it is never filled in
+# as 100 minus the other two. That would dump water and solids error onto
+# bitumen. Water is the leftover instead.
+PROTECTED_OUTPUTS = ("Bitumen",)
 
 
 def predicted_outputs(residual_output: str) -> list:
@@ -20,11 +24,14 @@ def choose_residual_output(
     r2_by_name: Optional[Mapping[str, float]] = None,
     mae_by_name: Optional[Mapping[str, float]] = None,
 ) -> str:
-    """Pick the leftover grade: lowest validation R², or highest MAE if R² is missing. Solids is the fallback so Water and Bitumen stay as measured values."""
+    """Pick the leftover grade: lowest validation R², or highest MAE if R² is missing. Bitumen is never leftover. Solids is the fallback."""
     r2_by_name = r2_by_name or {}
     mae_by_name = mae_by_name or {}
+    candidates = [
+        name for name in OUTPUT_NAMES if name not in PROTECTED_OUTPUTS
+    ] or list(OUTPUT_NAMES)
     ranked = []
-    for name in OUTPUT_NAMES:
+    for name in candidates:
         if name not in r2_by_name:
             continue
         try:
@@ -43,7 +50,7 @@ def choose_residual_output(
         return ranked[0][2]
 
     mae_ranked = []
-    for name in OUTPUT_NAMES:
+    for name in candidates:
         if name not in mae_by_name:
             continue
         try:

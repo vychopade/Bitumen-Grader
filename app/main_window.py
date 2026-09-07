@@ -59,7 +59,7 @@ NAV_SHORTCUT_LETTERS = {"train": "T", "grade": "G", "models": "M"}
 
 
 def _resolve_font_family() -> str:
-    """Pick a plain system font so the UI does not look like a marketing site. Inter was too polished for a lab tool."""
+    """Pick a plain system font so the UI stays easy to read."""
     families = set(QFontDatabase.families())
     for fallback in _FALLBACK_FONT_FAMILIES:
         if fallback in families:

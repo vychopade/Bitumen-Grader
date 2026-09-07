@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import Optional, Union
 
@@ -148,17 +149,31 @@ def _square_resize(image_size: int) -> transforms.Resize:
     )
 
 
+class _RandomQuarterTurn:
+    """Rotates a PIL image by a random multiple of 90 degrees."""
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        turns = random.randrange(4)
+        if not turns:
+            return image
+        return image.transpose(
+            (Image.Transpose.ROTATE_90, Image.Transpose.ROTATE_180,
+             Image.Transpose.ROTATE_270)[turns - 1]
+        )
+
+
 def build_train_transforms(image_size: int = IMAGE_SIZE) -> transforms.Compose:
-    """Training transforms: letterbox to a square, a small rotate/shift, then left-right and up-down flips. Colour jitter and random zoom wipe out froth texture so we skip them."""
+    """Training transforms: letterbox to a square, then a random 90° turn
+    and left-right / up-down flips.
+
+    Froth photos have no "right way up", so those eight views are all valid.
+    Colour jitter and random zoom were tried and they smeared the bubble
+    texture, so they stay out.
+    """
     return transforms.Compose(
         [
             _LetterboxToSquare(image_size),
-            transforms.RandomAffine(
-                degrees=8,
-                translate=(0.04, 0.04),
-                interpolation=_INTERPOLATION,
-                fill=_LETTERBOX_FILL,
-            ),
+            _RandomQuarterTurn(),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),

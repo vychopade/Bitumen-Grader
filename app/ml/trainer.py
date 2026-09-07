@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 from dataclasses import dataclass
@@ -14,12 +15,23 @@ from PyQt6.QtCore import pyqtSignal as Signal
 from torch.utils.data import DataLoader
 
 from app.constants import OUTPUT_NAMES
+from app.ml.cnn_model import find_feature_standardizer
 from app.ml.composition import (
     choose_residual_output,
     close_composition,
     predicted_outputs,
 )
-from app.ml.recipe import CLS_BINS, WEIGHT_DECAY, learning_rate_for_adaptation
+from app.ml.recipe import (
+    CLS_BINS,
+    HEAD_LR_MULTIPLIER,
+    HEAD_WEIGHT_DECAY,
+    MIN_LR_FRACTION,
+    NUM_EPOCHS,
+    SMOOTH_L1_BETA,
+    WARMUP_EPOCHS,
+    WEIGHT_DECAY,
+    learning_rate_for_adaptation,
+)
 
 _OUTPUT_ORDER = ("Water", "Solids", "Bitumen")
 
@@ -56,6 +68,14 @@ class TripleRegressionResult:
     test_r2: Optional[dict] = None
     val_composition_mae: Optional[dict] = None
     val_composition_r2: Optional[dict] = None
+    # Scores after averaging every photo that shares one lab measurement.
+    test_measurement_r2: Optional[dict] = None
+    test_measurement_mae: Optional[dict] = None
+    val_measurement_r2: Optional[dict] = None
+    # MAE you would get by ignoring the photo and always answering with the
+    # train-split average. Anything above this is worse than not looking.
+    test_baseline_mae: Optional[dict] = None
+    test_measurement_count: Optional[int] = None
 
 
 def _part_for(result: TripleRegressionResult, name: str) -> RegressionTrainingResult:
@@ -136,7 +156,12 @@ def merge_triple_result(result: TripleRegressionResult) -> RegressionTrainingRes
 
 
 class RegressionTrainer(QObject):
-    """Train three single-output networks. AdamW, Smooth L1, and a scheduler on val R². We keep the checkpoint with the best mean val R². scratch and ft train the whole net; fe freezes the backbone. patience 0 means run every epoch unless the user hits Stop."""
+    """Train three single-output networks (water, solids, bitumen).
+
+    Uses AdamW and Smooth L1. The checkpoint with the best mean validation R²
+    is kept. scratch and ft train the whole net; fe freezes the backbone.
+    patience 0 means run every epoch unless the user hits Stop.
+    """
 
     progress = Signal(int, float, float, dict, float, dict)
     finished = Signal(object)
@@ -150,8 +175,9 @@ class RegressionTrainer(QObject):
         val_loader: DataLoader,
         device,
         learning_rate=None,
-        num_epochs=100,
+        num_epochs=NUM_EPOCHS,
         weight_decay=WEIGHT_DECAY,
+        head_weight_decay=HEAD_WEIGHT_DECAY,
         output_stats=None,
         normalise_targets=False,
         patience=0,
@@ -180,6 +206,7 @@ class RegressionTrainer(QObject):
         self.device = device
         self.num_epochs = int(num_epochs)
         self.weight_decay = float(weight_decay)
+        self.head_weight_decay = float(head_weight_decay)
         self.output_stats = output_stats or {}
         self.normalise_targets = bool(normalise_targets)
         self.patience = max(0, int(patience))
@@ -199,20 +226,88 @@ class RegressionTrainer(QObject):
         self.grad_clip_max_norm = float(grad_clip_max_norm)
         self.use_scheduler = bool(use_scheduler)
         self.stop_requested = False
+        self.val_groups = self._loader_groups(val_loader)
+        self.test_groups = self._loader_groups(test_loader)
+
+    @staticmethod
+    def _loader_groups(loader: Optional[DataLoader]) -> Optional[list]:
+        """Which lab measurement each photo in an eval loader belongs to.
+
+        Only valid because the val and test loaders are built with shuffle=False,
+        so dataset order is prediction order.
+        """
+        dataset = getattr(loader, "dataset", None)
+        getter = getattr(dataset, "sample_groups", None)
+        return getter() if callable(getter) else None
 
     def request_stop(self) -> None:
         """Finish the current epoch, then quit. The UI Stop button calls this."""
         self.stop_requested = True
 
+    def _build_scheduler(self, optimizer):
+        """Warm up for a few epochs, then cosine-decay toward a small floor.
+
+        A plateau scheduler was too jumpy on a small validation split: one
+        unlucky epoch would crash the learning rate. Cosine is boring but
+        predictable.
+        """
+        total = max(1, self.num_epochs)
+        warmup = min(WARMUP_EPOCHS, max(0, total - 1))
+
+        def factor(epoch: int) -> float:
+            if epoch < warmup:
+                return (epoch + 1) / (warmup + 1)
+            progress = (epoch - warmup) / max(1, total - warmup)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+            return MIN_LR_FRACTION + (1.0 - MIN_LR_FRACTION) * cosine
+
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+
     def _build_optimizer(self):
-        params = [
-            parameter
-            for parameter in self.model.parameters()
-            if parameter.requires_grad
-        ]
-        return torch.optim.AdamW(
-            params, lr=self.learning_rate, weight_decay=self.weight_decay
+        """Head and backbone get their own learning rate and weight decay.
+
+        A pretrained backbone has to move slowly so its filters stay useful.
+        A brand-new head needs a faster rate, and more weight decay, so it
+        does not overfit the training pans.
+        """
+        head_ids = {
+            id(parameter) for parameter in self.model.head_parameters()
+        }
+        head, backbone = [], []
+        for parameter in self.model.parameters():
+            if not parameter.requires_grad:
+                continue
+            (head if id(parameter) in head_ids else backbone).append(parameter)
+
+        # Strong head decay only makes sense when the backbone is frozen or
+        # barely moving. From scratch, the head is just another layer.
+        pretrained = bool(getattr(self.model, "pretrained", False))
+        head_decay = (
+            self.head_weight_decay if pretrained else self.weight_decay
         )
+        groups = []
+        if backbone:
+            groups.append(
+                {
+                    "params": backbone,
+                    "lr": self.learning_rate,
+                    "weight_decay": self.weight_decay,
+                }
+            )
+        if head:
+            # Speed up the head only when a pretrained backbone is also
+            # training. Frozen-head-only and from-scratch both use one rate.
+            multiplier = HEAD_LR_MULTIPLIER if (backbone and pretrained) else 1.0
+            groups.append(
+                {
+                    "params": head,
+                    "lr": self.learning_rate * multiplier,
+                    "weight_decay": head_decay,
+                }
+            )
+        if not groups:
+            groups = [{"params": [], "lr": self.learning_rate}]
+        return torch.optim.AdamW(groups, lr=self.learning_rate)
 
     def _denormalise_batch(
         self, batch: torch.Tensor, names: Optional[tuple] = None
@@ -348,6 +443,11 @@ class RegressionTrainer(QObject):
             self.model.unfreeze_backbone()
 
     def _init_single_output_bias(self, name: str) -> None:
+        """Start the head predicting the training mean instead of zero.
+
+        If labels are z-scored, that mean is 0. Using the raw percent mean
+        here would put the bias way off for the first few epochs.
+        """
         layer_fn = getattr(self.model, "_output_linear", None)
         layer = layer_fn() if callable(layer_fn) else None
         if layer is None or layer.bias is None:
@@ -355,10 +455,36 @@ class RegressionTrainer(QObject):
         if int(layer.bias.shape[0]) != 1:
             self.model.init_output_bias(self.output_stats)
             return
-        mean = float((self.output_stats.get(name) or {}).get("mean", 0.0))
+        mean = (
+            0.0
+            if self.normalise_targets
+            else float((self.output_stats.get(name) or {}).get("mean", 0.0))
+        )
         with torch.no_grad():
             layer.weight.zero_()
             layer.bias.fill_(mean)
+
+    def _fit_feature_standardizer(self) -> None:
+        """Fit the head's per-channel mean/std on the training photos.
+
+        One pass over the train loader with the backbone frozen in eval mode.
+        The values are stored in the .pt file and reused at grade time.
+        """
+        standardizer = find_feature_standardizer(self.model)
+        backbone = getattr(self.model, "backbone", None)
+        if standardizer is None or backbone is None:
+            return
+        was_training = self.model.training
+        self.model.eval()
+        blocks = []
+        with torch.no_grad():
+            for images, _ in self.train_loader:
+                blocks.append(
+                    backbone(images.to(self.device)).detach().cpu()
+                )
+        self.model.train(was_training)
+        if blocks:
+            standardizer.fit(torch.cat(blocks, dim=0))
 
     def _collect_percent_column(self, loader: DataLoader, output_index: int):
         self.model.eval()
@@ -404,13 +530,85 @@ class RegressionTrainer(QObject):
         truths = self._to_percentages(truths, OUTPUT_NAMES)
         return raw, truths
 
-    def _composition_metrics(self, loader: DataLoader, residual_output: str):
+    @staticmethod
+    def _average_by_group(
+        preds: torch.Tensor, truths: torch.Tensor, groups: Optional[list]
+    ):
+        """Collapse every photo of one lab measurement into a single row.
+
+        Four to twenty photos can share one lab result, so scoring per photo
+        counts the same measurement many times and reports the noise of a single
+        snapshot. Averaging first is also how the grades get used in practice.
+        """
+        if not groups or len(groups) != len(preds):
+            return None, None
+        order: dict = {}
+        for index, key in enumerate(groups):
+            order.setdefault(key, []).append(index)
+        keys = list(order)
+        pred_rows = torch.stack(
+            [preds[order[key]].mean(dim=0) for key in keys]
+        )
+        truth_rows = torch.stack(
+            [truths[order[key]].mean(dim=0) for key in keys]
+        )
+        return pred_rows, truth_rows
+
+    def _measurement_metrics(
+        self, preds: torch.Tensor, truths: torch.Tensor, groups: Optional[list]
+    ):
+        grouped_preds, grouped_truths = self._average_by_group(
+            preds, truths, groups
+        )
+        if grouped_preds is None or len(grouped_preds) < 2:
+            return None, None, None
+        mae = {
+            name: (grouped_preds[:, index] - grouped_truths[:, index])
+            .abs()
+            .mean()
+            .item()
+            for index, name in enumerate(OUTPUT_NAMES)
+        }
+        r2 = self._r2_dict(grouped_preds, grouped_truths, OUTPUT_NAMES)
+        return mae, r2, len(grouped_preds)
+
+    def _baseline_mae(self, truths: torch.Tensor) -> dict:
+        """MAE of always answering with the train-split average, as a floor to beat."""
+        return {
+            name: (
+                truths[:, index]
+                - float((self.output_stats.get(name) or {}).get("mean", 0.0))
+            )
+            .abs()
+            .mean()
+            .item()
+            for index, name in enumerate(OUTPUT_NAMES)
+        }
+
+    def _composition_metrics(
+        self,
+        loader: DataLoader,
+        residual_output: str,
+        groups: Optional[list] = None,
+    ):
         raw, truths = self._collect_all_percent_predictions(loader)
         if len(raw) == 0:
-            return None, None, None, None
+            return None
         closed = close_composition(raw, residual_output)
         mae, r2, sum_deviation, cls_acc = self._percent_metrics(closed, truths)
-        return mae, r2, sum_deviation, cls_acc
+        measurement_mae, measurement_r2, measurement_count = (
+            self._measurement_metrics(closed, truths, groups)
+        )
+        return {
+            "mae": mae,
+            "r2": r2,
+            "sum_deviation": sum_deviation,
+            "cls_acc": cls_acc,
+            "measurement_mae": measurement_mae,
+            "measurement_r2": measurement_r2,
+            "measurement_count": measurement_count,
+            "baseline_mae": self._baseline_mae(truths),
+        }
 
     def _head_scores(self, results: dict):
         r2 = {}
@@ -426,19 +624,14 @@ class RegressionTrainer(QObject):
         self.model = self.models[name]
         self.model.to(self.device)
         self._apply_adaptation()
+        self._fit_feature_standardizer()
         if self.init_output_bias:
             self._init_single_output_bias(name)
         optimizer = self._build_optimizer()
         scheduler = None
         if self.use_scheduler:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode="max",
-                factor=0.5,
-                patience=7,
-                min_lr=1e-6,
-            )
-        loss_fn = nn.SmoothL1Loss(beta=1.0)
+            scheduler = self._build_scheduler(optimizer)
+        loss_fn = nn.SmoothL1Loss(beta=SMOOTH_L1_BETA)
 
         best_val_loss = float("inf")
         best_mean_r2 = float("-inf")
@@ -493,8 +686,11 @@ class RegressionTrainer(QObject):
                 self.val_loader, loss_fn, output_index=output_index
             )
             mean_r2 = self._mean_r2(val_r2_dict)
-            if self.use_scheduler and scheduler is not None:
-                scheduler.step(mean_r2)
+            # Read the rate before stepping, so the log shows the rate this
+            # epoch actually trained at rather than the next one's.
+            epoch_lr = optimizer.param_groups[0]["lr"]
+            if scheduler is not None:
+                scheduler.step()
 
             training_history.append(
                 {
@@ -511,7 +707,7 @@ class RegressionTrainer(QObject):
                     "solids_cls_acc": val_cls_acc.get("Solids", 0.0),
                     "bitumen_cls_acc": val_cls_acc.get("Bitumen", 0.0),
                     "sum_deviation": val_sum_deviation,
-                    "lr": optimizer.param_groups[0]["lr"],
+                    "lr": epoch_lr,
                 }
             )
 
@@ -604,31 +800,40 @@ class RegressionTrainer(QObject):
             residual = choose_residual_output(r2_by_name, mae_by_name)
             predicted = predicted_outputs(residual)
 
-            val_mae, val_r2, _, _ = self._composition_metrics(
-                self.val_loader, residual
+            val_scores = (
+                self._composition_metrics(
+                    self.val_loader, residual, self.val_groups
+                )
+                or {}
             )
-            test_mae = None
-            test_r2 = None
-            test_sum = None
+            test_scores = {}
             if (
                 self.test_loader is not None
                 and len(self.test_loader.dataset) > 0
             ):
-                test_mae, test_r2, test_sum, _ = self._composition_metrics(
-                    self.test_loader, residual
+                test_scores = (
+                    self._composition_metrics(
+                        self.test_loader, residual, self.test_groups
+                    )
+                    or {}
                 )
 
             result = TripleRegressionResult(
                 water=results["Water"],
                 solids=results["Solids"],
                 bitumen=results["Bitumen"],
-                test_normalised_sum_deviation=test_sum,
-                test_normalised_mae=test_mae,
+                test_normalised_sum_deviation=test_scores.get("sum_deviation"),
+                test_normalised_mae=test_scores.get("mae"),
                 residual_output=residual,
                 predicted_outputs=predicted,
-                test_r2=test_r2,
-                val_composition_mae=val_mae,
-                val_composition_r2=val_r2,
+                test_r2=test_scores.get("r2"),
+                val_composition_mae=val_scores.get("mae"),
+                val_composition_r2=val_scores.get("r2"),
+                test_measurement_r2=test_scores.get("measurement_r2"),
+                test_measurement_mae=test_scores.get("measurement_mae"),
+                val_measurement_r2=val_scores.get("measurement_r2"),
+                test_baseline_mae=test_scores.get("baseline_mae"),
+                test_measurement_count=test_scores.get("measurement_count"),
             )
             self.finished.emit(result)
 

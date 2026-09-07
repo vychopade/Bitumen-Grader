@@ -14,6 +14,7 @@ from app.constants import OUTPUT_NAMES
 from app.ml.cnn_model import (
     BitumenRegressor,
     TripleBitumenRegressor,
+    dihedral_view,
     is_triple_payload,
     select_torch_device,
 )
@@ -106,6 +107,10 @@ class RegressionPredictor:
         )
         self._batch_size = _infer_batch_size(self.metadata, device)
         self._decode_workers = min(8, os.cpu_count() or 1)
+        # Average over the same flips/rotations used in training, if the
+        # checkpoint asked for it. Older files have no tta_views and stay
+        # single-view.
+        self._tta_views = max(1, int(self.metadata.get("tta_views", 1) or 1))
 
     def _prepare_source(self, source: ImageSource) -> Image.Image:
         return prepare_image(
@@ -173,6 +178,21 @@ class RegressionPredictor:
                 tensors.append(None)
         return tensors
 
+    def _forward_once(self, batch: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.model, TripleBitumenRegressor):
+            return self.model(batch, residual_output=self.residual_output)
+        return self.model(batch)
+
+    def _forward_with_tta(self, batch: torch.Tensor) -> torch.Tensor:
+        """Average predictions over the square symmetries stored with the checkpoint."""
+        if self._tta_views <= 1:
+            return self._forward_once(batch)
+        total = None
+        for view in range(self._tta_views):
+            output = self._forward_once(dihedral_view(batch, view))
+            total = output if total is None else total + output
+        return total / float(self._tta_views)
+
     def predict(self, pil_image) -> dict:
         results = self.predict_many([pil_image])
         if not results or results[0] is None:
@@ -212,12 +232,7 @@ class RegressionPredictor:
                 else:
                     batch = batch.to(self.device)
                 with torch.inference_mode():
-                    if isinstance(self.model, TripleBitumenRegressor):
-                        raw_outputs = self.model(
-                            batch, residual_output=self.residual_output
-                        )
-                    else:
-                        raw_outputs = self.model(batch)
+                    raw_outputs = self._forward_with_tta(batch)
                 for local_index, result in zip(
                     ready_index, self._dicts_from_raw(raw_outputs)
                 ):

@@ -36,9 +36,10 @@ Train a model
 3. Give the model a name.
 4. Click Start training.
 
-The Baseline CNN is the recommended architecture.
-Training runs three networks in turn: Water, then Solids,
-then Bitumen. That takes a while on CPU.
+The recommended architecture is ResNet18 transfer, with
+Frozen features. Training runs three networks in turn:
+Water, then Solids, then Bitumen. Frozen-feature runs are
+much faster than training a CNN from scratch.
 
 When it finishes, the model is saved in the models folder
 and loaded automatically so you can grade right away.
@@ -83,8 +84,9 @@ Grade photos
 3. Click Grade this photo, or Grade all.
 
 Each photo gets three percentages: water, solids, and
-bitumen. They always add up to 100. Two of them come from
-the networks; the third is 100 minus those two.
+bitumen. They always add up to 100. Bitumen and one other
+grade come from the networks; the remaining grade is set to
+100 minus those two so the three numbers close.
 
 You can export a CSV of batch results from the Grade all
 table.

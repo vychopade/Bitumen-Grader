@@ -1,4 +1,4 @@
-"""Colours and button styles shared by the pages. Kept simple on purpose so it feels like a lab tool, not a website."""
+"""Colours and button styles shared by the pages."""
 
 from __future__ import annotations
 

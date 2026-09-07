@@ -34,6 +34,8 @@ from app.components.progress_panel import ProgressPanel
 from app.constants import OUTPUT_NAMES
 from app.ml.cnn_model import (
     ARCHITECTURE_LABELS,
+    DEFAULT_ARCHITECTURE,
+    DEFAULT_HEAD,
     TRAINABLE_ARCHITECTURES,
     BitumenRegressor,
     TripleBitumenRegressor,
@@ -42,12 +44,13 @@ from app.ml.cnn_model import (
 from app.ml.dataset import RegressionDataset
 from app.ml.recipe import (
     BATCH_SIZE,
+    DEFAULT_ADAPTATION,
     DEFAULT_SPLIT_MODE,
-    IMAGE_SIZE,
     NUM_EPOCHS,
     TEST_FRACTION,
     VAL_FRACTION,
     WEIGHT_DECAY,
+    image_size_for_architecture,
     learning_rate_for_adaptation,
 )
 from app.ml.trainer import (
@@ -530,10 +533,13 @@ class TrainPage(QWidget):
         self._architecture_combo = QComboBox()
         for key in TRAINABLE_ARCHITECTURES:
             self._architecture_combo.addItem(ARCHITECTURE_LABELS[key], key)
-        self._architecture_combo.setCurrentIndex(0)
+        self._architecture_combo.setCurrentIndex(
+            max(0, self._architecture_combo.findData(DEFAULT_ARCHITECTURE))
+        )
         self._architecture_combo.setToolTip(
-            "Baseline CNN from scratch is the most robust default for froth "
-            "images."
+            "ResNet18 transfer uses a pretrained ImageNet "
+            "backbone and trains a small head. The from-scratch CNN is slower "
+            "to train and usually less accurate on this dataset."
         )
         self._architecture_combo.currentIndexChanged.connect(
             self._on_strategy_changed
@@ -541,16 +547,22 @@ class TrainPage(QWidget):
         self._architecture_combo.currentIndexChanged.connect(
             self._sync_learning_rate_from_adaptation
         )
+        # Architectures differ in input size, so the datasets have to be rebuilt.
+        self._architecture_combo.currentIndexChanged.connect(
+            self._on_architecture_size_changed
+        )
         self._add_form_row(form, "Architecture", self._architecture_combo)
 
         self._adaptation_combo = QComboBox()
-        self._adaptation_combo.addItem("Fine-tune (recommended)", "ft")
         self._adaptation_combo.addItem("Frozen features", "fe")
+        self._adaptation_combo.addItem("Fine-tune", "ft")
+        self._adaptation_combo.setCurrentIndex(
+            max(0, self._adaptation_combo.findData(DEFAULT_ADAPTATION))
+        )
         self._adaptation_combo.setToolTip(
-            "Fine-tuning trains the whole net and beat frozen ImageNet "
-            "features in the study. "
-            "Frozen features keep the backbone fixed and were weaker, "
-            "especially for Bitumen."
+            "Frozen features keep the ImageNet backbone fixed and train only "
+            "the head. That is faster and worked better here than fine-tuning "
+            "the whole network."
         )
         self._adaptation_combo.currentIndexChanged.connect(
             self._on_strategy_changed
@@ -571,12 +583,16 @@ class TrainPage(QWidget):
         form.addRow(self._adaptation_label, self._adaptation_combo)
 
         self._head_combo = QComboBox()
+        self._head_combo.addItem("Normalised linear", "norm")
         self._head_combo.addItem("Native linear", "native")
         self._head_combo.addItem("2-layer (C2)", "c2")
+        self._head_combo.setCurrentIndex(
+            max(0, self._head_combo.findData(DEFAULT_HEAD))
+        )
         self._head_combo.setToolTip(
-            "Native is a single linear layer. C2 is the 2-layer head that "
-            "helped Solids. "
-            "Deeper batch-norm heads are omitted because they collapse."
+            "Normalised linear scales the backbone features "
+            "before a single linear layer. Native is that linear layer with "
+            "no scaling. C2 adds a hidden layer; it tends to overfit here."
         )
         self._head_combo.currentIndexChanged.connect(self._on_strategy_changed)
         self._head_label = QLabel("Head")
@@ -595,8 +611,7 @@ class TrainPage(QWidget):
         self._epochs_spin.setRange(1, 200)
         self._epochs_spin.setValue(NUM_EPOCHS)
         self._epochs_spin.setToolTip(
-            "How many full passes over the training images (100 in the "
-            "study). "
+            "How many full passes over the training images, per grade. "
             "The checkpoint with the best mean validation R² is kept even if "
             "a later epoch is worse."
         )
@@ -606,8 +621,7 @@ class TrainPage(QWidget):
         self._batch_size_spin.setRange(1, 128)
         self._batch_size_spin.setValue(BATCH_SIZE)
         self._batch_size_spin.setToolTip(
-            "Images per Adam step (32 in the study). Lower this if you run "
-            "out of memory; "
+            "Images per training step. Lower this if you run out of memory; "
             "higher is faster on GPU but needs more RAM. If the training "
             "set is larger than the batch, the last incomplete batch is dropped."
         )
@@ -618,11 +632,10 @@ class TrainPage(QWidget):
         self._lr_spin.setRange(1e-6, 0.1)
         self._lr_spin.setSingleStep(1e-4)
         self._lr_spin.setToolTip(
-            "Adam step size. The study used 0.0001 for baseline/fine-tune and "
-            "0.001 when the "
-            "backbone is frozen. Lower it if loss jumps around;"
-            " raise it if loss barely moves. "
-            "Changing Adaptation resets this to the study value for that mode."
+            "Adam step size. Frozen-backbone runs use 0.003; from-scratch "
+            "and fine-tune use 0.0001. Lower it if loss jumps around; "
+            "raise it if loss barely moves. Changing Adaptation resets this "
+            "to the default for that mode."
         )
         self._add_form_row(form, "Learning rate", self._lr_spin)
 
@@ -668,17 +681,17 @@ class TrainPage(QWidget):
 
     def _current_architecture(self) -> str:
         if self._architecture_combo is None:
-            return "baseline"
+            return DEFAULT_ARCHITECTURE
         data = self._architecture_combo.currentData()
-        return str(data) if data else "baseline"
+        return str(data) if data else DEFAULT_ARCHITECTURE
 
     def _current_adaptation(self) -> str:
         if not self._is_transfer_architecture():
             return "scratch"
         if self._adaptation_combo is None:
-            return "ft"
+            return DEFAULT_ADAPTATION
         data = self._adaptation_combo.currentData()
-        return str(data) if data else "ft"
+        return str(data) if data else DEFAULT_ADAPTATION
 
     def _current_head(self) -> str:
         if self._parent_model_meta:
@@ -686,15 +699,20 @@ class TrainPage(QWidget):
         if not self._is_transfer_architecture():
             return "native"
         if self._head_combo is None:
-            return "native"
+            return DEFAULT_HEAD
         data = self._head_combo.currentData()
-        return str(data) if data else "native"
+        return str(data) if data else DEFAULT_HEAD
 
     def _is_transfer_architecture(
         self, architecture: Optional[str] = None
     ) -> bool:
         architecture = architecture or self._current_architecture()
-        return architecture in {"resnet50", "vgg16", "resnet18"}
+        return architecture in {
+            "resnet18_tap",
+            "resnet50",
+            "vgg16",
+            "resnet18",
+        }
 
     def _current_batch_size(self) -> int:
         if self._batch_size_spin is None:
@@ -711,7 +729,7 @@ class TrainPage(QWidget):
         return float(self._lr_spin.value())
 
     def _sync_learning_rate_from_adaptation(self, *_args) -> None:
-        """Puts the paper's Adam learning rate into the spin box for the current adaptation mode."""
+        """Put the default learning rate for the current adaptation mode into the spin box."""
         if self._lr_spin is None:
             return
         if (
@@ -719,7 +737,7 @@ class TrainPage(QWidget):
             and self._adaptation_combo is not None
         ):
             data = self._adaptation_combo.currentData()
-            mode = str(data) if data else "ft"
+            mode = str(data) if data else DEFAULT_ADAPTATION
         else:
             mode = "scratch"
         self._lr_spin.setValue(learning_rate_for_adaptation(mode))
@@ -748,7 +766,9 @@ class TrainPage(QWidget):
         for key in TRAINABLE_ARCHITECTURES:
             self._architecture_combo.addItem(ARCHITECTURE_LABELS[key], key)
         index = self._architecture_combo.findData(
-            current if current in TRAINABLE_ARCHITECTURES else "baseline"
+            current
+            if current in TRAINABLE_ARCHITECTURES
+            else DEFAULT_ARCHITECTURE
         )
         self._architecture_combo.setCurrentIndex(max(0, index))
         self._architecture_combo.blockSignals(False)
@@ -853,6 +873,10 @@ class TrainPage(QWidget):
         if self._model_name_edit is not None:
             self._model_name_edit.setText(f"{base} retrained")
         self._on_continue_model_changed()
+
+    def _on_architecture_size_changed(self, _index: int = 0) -> None:
+        """Re-letterbox the datasets when the chosen architecture wants a different input size."""
+        self._rebuild_timer.start(VAL_SPLIT_REBUILD_DEBOUNCE_MS)
 
     def _on_strategy_changed(self, _index: int = 0) -> None:
         is_transfer = self._is_transfer_architecture()
@@ -967,7 +991,7 @@ class TrainPage(QWidget):
         return True
 
     def _uses_target_normalisation(self) -> bool:
-        """True when we should z-score the labels. Fresh runs do this so AdamW sees O(1) targets. Continuing an old checkpoint keeps that file's scale so the weights still make sense."""
+        """True when labels should be z-scored. New runs do this. Continuing from a saved model keeps that model's scale so the weights still match."""
         continuing = bool(
             self._continue_checkbox is not None
             and self._continue_checkbox.isChecked()
@@ -977,7 +1001,9 @@ class TrainPage(QWidget):
         return True
 
     def _dataset_kwargs(self, *, normalise: Optional[bool] = None) -> Dict:
-        image_size = IMAGE_SIZE
+        # Different architectures want different input sizes, so switching
+        # architecture rebuilds the datasets.
+        image_size = image_size_for_architecture(self._current_architecture())
         legacy_crop = False
         if (
             self._continue_checkbox is not None
@@ -1276,7 +1302,12 @@ class TrainPage(QWidget):
             "parent_model_path": (parent_meta or {}).get("model_path")
             if continuing
             else None,
-            "recipe": "prince_prasad_table2",
+            "recipe": "froth_grouped_cv_v1",
+            # Enough to rebuild the exact same split later and re-score this model.
+            "split_seed": kwargs["seed"],
+            "val_fraction": kwargs["val_fraction"],
+            "test_fraction": kwargs["test_fraction"],
+            "split_campaigns": train_dataset.split_campaigns,
             "normalise_targets": bool(kwargs["normalise"]),
             "preserve_aspect_ratio": True,
             "epochs": trainer.num_epochs,
@@ -1389,6 +1420,13 @@ class TrainPage(QWidget):
                 result.test_normalised_sum_deviation
             )
             extra["test_normalised_mae"] = result.test_normalised_mae
+            # Per-measurement scores are the honest read: photos of one pan
+            # share a lab result, so per-photo scores repeat the same sample.
+            extra["test_measurement_r2"] = result.test_measurement_r2
+            extra["test_measurement_mae"] = result.test_measurement_mae
+            extra["val_measurement_r2"] = result.val_measurement_r2
+            extra["test_measurement_count"] = result.test_measurement_count
+            extra["test_baseline_mae"] = result.test_baseline_mae
             bundle = TripleBitumenRegressor(self._trainer.models)
             merged = merge_triple_result(result)
             paths = save_model(
@@ -1425,6 +1463,9 @@ class TrainPage(QWidget):
                 test_mae=test_mae,
                 best_val_r2=best_val_r2,
                 test_r2=test_r2,
+                test_measurement_r2=result.test_measurement_r2,
+                test_measurement_mae=result.test_measurement_mae,
+                test_measurement_count=result.test_measurement_count,
             )
 
         if self.main_window is not None:
